@@ -1961,6 +1961,31 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| fail(&env, EscrowError::EscrowNotInitialized))
     }
 
+    /// Returns the current beneficiary (SME) address that receives funded principal on
+    /// [`LiquifactEscrow::withdraw`], or [`None`] when the escrow has not yet been
+    /// initialized.
+    ///
+    /// The beneficiary is [`InvoiceEscrow::sme_address`] stored in [`DataKey::Escrow`].
+    /// This is a focused O(1) read view that avoids forcing callers to reconstruct the
+    /// full escrow state when only the payout destination is needed.
+    ///
+    /// # Returns
+    /// - `None` — escrow not yet initialized (no [`DataKey::Escrow`] entry in storage).
+    /// - `Some(addr)` — the current beneficiary address; updated by
+    ///   [`LiquifactEscrow::rotate_beneficiary`].
+    ///
+    /// # Authorization
+    /// None — this is a read-only view entrypoint. No `require_auth` is called.
+    ///
+    /// # Storage mutations
+    /// None — this entrypoint never writes to storage.
+    pub fn get_beneficiary(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<DataKey, InvoiceEscrow>(&DataKey::Escrow)
+            .map(|escrow| escrow.sme_address)
+    }
+
     /// Returns the remaining funding capacity before the funding target is reached.
     ///
     /// Clamped to `0` via `saturating_sub` if the escrow is over-funded.
