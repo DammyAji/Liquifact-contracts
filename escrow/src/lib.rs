@@ -1339,7 +1339,9 @@ pub struct CollateralRecordedEvt {
 /// This event is the removal-side counterpart to [`CollateralRecordedEvt`]. It
 /// copies the stored commitment fields before deletion so off-chain indexers can
 /// reconstruct which SME-reported asset record was retired without polling
-/// storage after the mutation.
+/// storage after the mutation. Exactly one `coll_clr` event is published per
+/// successful clear — do not emit a second parallel `#[contractevent]` with the
+/// same topic.
 ///
 /// # Fields
 /// - `name`: Hardcoded `coll_clr` symbol.
@@ -1358,23 +1360,6 @@ pub struct CollateralClearedEvt {
     /// SME-reported amount that was cleared from storage.
     pub amount: i128,
     /// Ledger timestamp from the original recorded commitment.
-    pub recorded_at: u64,
-}
-
-/// Emitted after [`LiquifactEscrow::clear_sme_collateral_commitment`] removes
-/// the SME-reported collateral metadata.
-///
-/// This supplements [`CollateralClearedEvt`] with a short event name and the
-/// full cleared commitment identity so indexers can reconstruct the
-/// record-to-clear lifecycle without a storage read after removal.
-#[contractevent]
-pub struct CollateralCommitmentCleared {
-    #[topic]
-    pub name: Symbol,
-    #[topic]
-    pub invoice_id: Symbol,
-    pub asset: Symbol,
-    pub amount: i128,
     pub recorded_at: u64,
 }
 
@@ -2765,15 +2750,6 @@ impl LiquifactEscrow {
             .remove(&DataKey::SmeCollateralPledge);
 
         CollateralClearedEvt {
-            name: symbol_short!("coll_clr"),
-            invoice_id: escrow.invoice_id.clone(),
-            asset: commitment.asset.clone(),
-            amount: commitment.amount,
-            recorded_at: commitment.recorded_at,
-        }
-        .publish(&env);
-
-        CollateralCommitmentCleared {
             name: symbol_short!("coll_clr"),
             invoice_id: escrow.invoice_id.clone(),
             asset: commitment.asset.clone(),
