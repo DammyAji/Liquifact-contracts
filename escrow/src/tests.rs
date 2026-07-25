@@ -24,7 +24,8 @@ use super::{
     InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient, MaturityMaxHorizonUpdated,
     MaxUniqueInvestorsCapLowered, PrimaryAttestationBound, RegistryRefRebound, TreasuryDustSwept,
     YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_ATTESTATION_READ_PAGE,
-    MAX_ATTESTATION_REVOKE_BATCH, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH, SCHEMA_VERSION,
+    MAX_ATTESTATION_REVOKE_BATCH, MAX_BUMP_TTL_BATCH, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH,
+    SCHEMA_VERSION,
 };
 use soroban_sdk::{
     symbol_short,
@@ -60,6 +61,7 @@ pub(crate) fn assert_contract_error<T, E>(
 mod admin;
 mod attestations;
 mod auth_matrix;
+mod batch_bump_ttl;
 mod cap_validation;
 #[rustfmt::skip]
 mod coverage;

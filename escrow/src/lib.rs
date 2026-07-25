@@ -171,6 +171,14 @@ pub const MAX_ATTESTATION_APPEND_ENTRIES: u32 = 32;
 /// Maximum number of indices that can be revoked in a single batch call.
 pub const MAX_ATTESTATION_REVOKE_BATCH: u32 = 32;
 
+/// Upper bound on [`LiquifactEscrow::batch_bump_ttl`] entries per call.
+///
+/// Mirrors [`MAX_INVESTOR_ALLOWLIST_BATCH`] — both operations iterate over a
+/// bounded address list touching persistent storage once per entry. 32 entries keeps
+/// per-call CPU/storage work predictable and consistent with the rest of the
+/// admin-batch API surface.
+pub const MAX_BUMP_TTL_BATCH: u32 = 32;
+
 /// Default maximum maturity horizon in seconds (~5 years) when no explicit horizon is configured.
 pub const DEFAULT_MATURITY_MAX_HORIZON_SECS: u64 = 157_680_000; // ~5 years (365.25 * 24 * 3600 * 5)
 
@@ -576,6 +584,11 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::batch_bump_ttl`] received an empty `keys` vector.
+    BumpTtlBatchEmpty = 223,
+    /// [`LiquifactEscrow::batch_bump_ttl`] exceeded [`MAX_BUMP_TTL_BATCH`].
+    BumpTtlBatchTooLarge = 224,
 }
 
 #[inline(always)]
@@ -5154,6 +5167,123 @@ impl LiquifactEscrow {
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
+        }
+    }
+
+    /// Extend TTL for a bounded set of storage keys in one admin-authenticated call.
+    ///
+    /// This is the admin-gated counterpart to [`LiquifactEscrow::bump_ttl`]. It gives the
+    /// escrow operator a single-call path to extend the TTL of any combination of storage
+    /// keys without having to issue separate transactions per key. The per-call ceiling
+    /// ([`MAX_BUMP_TTL_BATCH`]) keeps storage and CPU work predictable and consistent with
+    /// the rest of the admin-batch API surface.
+    ///
+    /// # Behavior
+    ///
+    /// For each [`DataKey`] in `keys`:
+    ///
+    /// - **Per-investor persistent keys** (`InvestorContribution`, `InvestorEffectiveYield`,
+    ///   `InvestorClaimNotBefore`, `InvestorClaimed`, `InvestorAllowlisted`):
+    ///   `env.storage().persistent().extend_ttl(&key, …)` is called **only when the key
+    ///   already exists** in persistent storage (guarded by `has()` before the call).
+    ///   Absent keys are silently skipped — an investor who has been allowlisted but not
+    ///   yet funded will not have `InvestorContribution` written; requesting it is a no-op
+    ///   rather than an error.
+    /// - **All other keys** (instance storage): a single
+    ///   `env.storage().instance().extend_ttl(…)` is issued. Because instance-storage TTL
+    ///   is contract-wide under the Soroban SDK, any non-persistent key in `keys` triggers
+    ///   the same net effect. Repeating the call within a batch is harmless.
+    ///
+    /// No funds move; no escrow status changes. This is a pure storage-maintenance
+    /// operation.
+    ///
+    /// # Authorization
+    ///
+    /// **Admin only.** Requires the current [`InvoiceEscrow::admin`] to sign.
+    /// Unlike [`LiquifactEscrow::bump_ttl`] (which is permissionless), this entrypoint
+    /// intentionally limits callers to the admin role so that arbitrary accounts cannot
+    /// induce unexpected compute costs on operator-controlled escrows.
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Typed error |
+    /// |-----------|-------------|
+    /// | `keys` is empty | [`EscrowError::BumpTtlBatchEmpty`] (code 223) |
+    /// | `keys.len() > MAX_BUMP_TTL_BATCH` | [`EscrowError::BumpTtlBatchTooLarge`] (code 224) |
+    /// | Caller is not the escrow admin | Auth host trap (no typed code) |
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// // Extend TTL for three investor addresses in a single call:
+    /// client.batch_bump_ttl(
+    ///     &admin,
+    ///     &vec![
+    ///         DataKey::InvestorContribution(alice.clone()),
+    ///         DataKey::InvestorContribution(bob.clone()),
+    ///         DataKey::InvestorAllowlisted(alice.clone()),
+    ///     ],
+    /// );
+    /// ```
+    pub fn batch_bump_ttl(env: Env, keys: Vec<DataKey>) {
+        // ── Bounded-vector guard ──────────────────────────────────────────────
+        // Mirror the pattern used by fund_batch / set_investors_allowlisted:
+        // reject empty batches (n == 0) and over-cap batches (n > MAX_BUMP_TTL_BATCH)
+        // before the auth check so invalid inputs are caught cheaply.
+        let n = keys.len();
+        ensure(&env, n > 0, EscrowError::BumpTtlBatchEmpty);
+        ensure(
+            &env,
+            n <= MAX_BUMP_TTL_BATCH,
+            EscrowError::BumpTtlBatchTooLarge,
+        );
+
+        // ── Admin authorization ───────────────────────────────────────────────
+        // Load the escrow and require the current admin to sign. This follows the
+        // canonical load_escrow_require_admin pattern (ADR-002 §guard ordering):
+        // read-only preconditions first, then require_auth, then storage writes.
+        let _escrow = Self::load_escrow_require_admin(&env);
+
+        // ── TTL extension ─────────────────────────────────────────────────────
+        // Soroban's extend_ttl never shortens TTL; this entrypoint only extends.
+        // No other state is mutated.
+        //
+        // Per-investor persistent keys have independent TTL from the contract instance.
+        // Instance-storage TTL is contract-wide, so a single extend_ttl call covers all
+        // non-persistent keys regardless of which instance key was requested.
+        for i in 0..n {
+            let key = keys.get(i).unwrap();
+            match key {
+                // ── Persistent per-investor keys ──────────────────────────────
+                // Each of these has an independent TTL under Soroban persistent storage.
+                DataKey::InvestorContribution(_)
+                | DataKey::InvestorEffectiveYield(_)
+                | DataKey::InvestorClaimNotBefore(_)
+                | DataKey::InvestorClaimed(_)
+                | DataKey::InvestorAllowlisted(_) => {
+                    // Only extend TTL for keys that actually exist in persistent storage.
+                    // `extend_ttl` on an absent key raises `Error(Storage, MissingValue)`;
+                    // callers supply keys they intend to keep alive but some (e.g. a
+                    // newly-allowlisted investor who has not yet funded) may not have all
+                    // five per-investor keys written yet. Skipping absent keys is safe:
+                    // there is nothing to keep alive if the entry does not exist.
+                    if env.storage().persistent().has(&key) {
+                        env.storage().persistent().extend_ttl(
+                            &key,
+                            PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                            PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                        );
+                    }
+                }
+                // ── All other keys live in instance storage ───────────────────
+                // Instance TTL is contract-wide; one call covers all instance keys.
+                _ => {
+                    env.storage().instance().extend_ttl(
+                        INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
+                        INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
+                    );
+                }
+            }
         }
     }
 
