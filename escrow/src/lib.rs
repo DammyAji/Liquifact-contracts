@@ -2306,6 +2306,31 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Load the attestation append-log from instance storage.
+    ///
+    /// Consolidates the repeated pattern of reading `DataKey::AttestationAppendLog` with an
+    /// empty-vec fallback used by `append_attestation_digest`, `revoke_attestation_digest`,
+    /// `revoke_attestation_digests`, and `unrevoke_attestation_digest`.
+    fn load_attestation_log(env: &Env) -> Vec<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttestationAppendLog)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Assert that `index` falls within the current append-log bounds.
+    ///
+    /// Panics with [`EscrowError::AttestationIndexOutOfRange`] when `index >= log.len()`.
+    /// Consolidates the identical range guard shared by `revoke_attestation_digest`,
+    /// `revoke_attestation_digests`, and `unrevoke_attestation_digest`.
+    fn require_attestation_index_in_range(env: &Env, log: &Vec<BytesN<32>>, index: u32) {
+        ensure(
+            env,
+            index < log.len(),
+            EscrowError::AttestationIndexOutOfRange,
+        );
+    }
+
     pub fn get_version(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
@@ -2484,11 +2509,7 @@ impl LiquifactEscrow {
     pub fn append_attestation_digest(env: Env, digest: BytesN<32>) {
         let escrow = Self::load_escrow_require_admin(&env);
 
-        let mut log: Vec<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env));
+        let mut log: Vec<BytesN<32>> = Self::load_attestation_log(&env);
         ensure(
             &env,
             log.len() < MAX_ATTESTATION_APPEND_ENTRIES,
@@ -2510,10 +2531,7 @@ impl LiquifactEscrow {
     }
 
     pub fn get_attestation_append_log(env: Env) -> Vec<BytesN<32>> {
-        env.storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env))
+        Self::load_attestation_log(&env)
     }
 
     /// Returns the digest and revocation flag at `index`.
@@ -2769,16 +2787,8 @@ impl LiquifactEscrow {
         let escrow = Self::get_escrow(env.clone());
         escrow.admin.require_auth();
 
-        let log: Vec<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env));
-        ensure(
-            &env,
-            index < log.len(),
-            EscrowError::AttestationIndexOutOfRange,
-        );
+        let log = Self::load_attestation_log(&env);
+        Self::require_attestation_index_in_range(&env, &log, index);
         ensure(
             &env,
             !env.storage()
@@ -2837,20 +2847,12 @@ impl LiquifactEscrow {
         let escrow = Self::get_escrow(env.clone());
         escrow.admin.require_auth();
 
-        let log: Vec<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env));
+        let log = Self::load_attestation_log(&env);
 
         for i in 0..n {
             let index = indices.get(i).unwrap();
 
-            ensure(
-                &env,
-                index < log.len(),
-                EscrowError::AttestationIndexOutOfRange,
-            );
+            Self::require_attestation_index_in_range(&env, &log, index);
             ensure(
                 &env,
                 !env.storage()
@@ -2924,16 +2926,8 @@ impl LiquifactEscrow {
     /// - [`EscrowError::AttestationIndexOutOfRange`] if `index >= log.len()`.
     /// - [`EscrowError::AttestationNotRevoked`] if the index is not currently revoked.
     pub fn unrevoke_attestation_digest(env: Env, index: u32) {
-        let log: Vec<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env));
-        ensure(
-            &env,
-            index < log.len(),
-            EscrowError::AttestationIndexOutOfRange,
-        );
+        let log = Self::load_attestation_log(&env);
+        Self::require_attestation_index_in_range(&env, &log, index);
         ensure(
             &env,
             env.storage()
