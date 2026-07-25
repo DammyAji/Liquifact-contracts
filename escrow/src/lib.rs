@@ -1801,6 +1801,31 @@ impl LiquifactEscrow {
     /// `invoice_id` must satisfy [`MAX_INVOICE_ID_STRING_LEN`] and charset rules (see
     /// [`validate_invoice_id_string`]).
     ///
+    /// # Yield & Fee Parameter Bounds
+    /// 
+    /// **Base yield (`yield_bps`):**
+    /// - Valid range: `0..=10_000` basis points (0% to 100%)
+    /// - `0` = no yield (valid; passive bond)
+    /// - `10_000` = 100% yield (valid; maximum coupon)
+    /// - Rejection: `YieldBpsOutOfRange` if outside `0..=10_000`
+    /// - **Derivation**: Basis point convention; arithmetic safety for coupon = principal × yield / 10_000
+    ///
+    /// **Protocol fee (`protocol_fee_bps`):**
+    /// - Valid range: `0..=10_000` basis points (0% to 100%)
+    /// - `0` = no fee, SME receives full disbursement (default)
+    /// - `10_000` = full disbursement routed to treasury
+    /// - Rejection: `ProtocolFeeBpsOutOfRange` if outside `0..=10_000`
+    /// - **Derivation**: Same basis point convention as yield; fee split math at withdrawal
+    ///
+    /// **Yield tiers (`yield_tiers`):**
+    /// When configured, each tier receives validation:
+    /// - Each tier's `yield_bps` must be in `0..=10_000` → `TierYieldOutOfRange`
+    /// - Each tier's `yield_bps` must be ≥ base `yield_bps` → `TierYieldBelowBase`
+    /// - Tier `min_lock_secs` must be strictly increasing across tiers → `TierLockNotIncreasing`
+    /// - Tier `yield_bps` must be non-decreasing across tiers → `TierYieldNotNonDecreasing`
+    /// - Individual `min_lock_secs` values require no explicit bound (u64 range is inherently safe;
+    ///   used only for comparison in tier selection, no arithmetic risk)
+    ///
     /// # Errors
     /// Emits typed [`EscrowError`] codes for invalid amounts, yield bounds, invoice id validation,
     /// duplicate initialization, malformed optional caps, and invalid tier configuration.
@@ -2722,9 +2747,23 @@ impl LiquifactEscrow {
     /// `amount` with `lock` seconds, using the **exact same tier-selection rule** applied at
     /// the first [`LiquifactEscrow::fund_with_commitment`] deposit.
     ///
-    /// The `amount` parameter is accepted to mirror the `fund_with_commitment` signature and
-    /// enable future amount-based tier selection; it is not used in the current lock-only
-    /// tier-selection rule.
+    /// # Parameters
+    ///
+    /// - `amount: i128` — Hypothetical funding amount (currently unused; accepted for signature
+    ///   parity with `fund_with_commitment()` for future extensibility).
+    ///   - Valid range: any `i128` value (no validation applied; parameter unused)
+    ///
+    /// - `lock: u64` — Hypothetical lock commitment in seconds.
+    ///   - Valid range: `0..=u64::MAX` (all u64 values safe; used in comparison only)
+    ///   - `0` = no lock → returns base yield
+    ///   - `> 0` = seconds; matched against tier `min_lock_secs` for highest-yield tier selection
+    ///   - **Derivation**: Pure comparison logic `lock >= tier.min_lock_secs` is overflow-free
+    ///
+    /// # Returns
+    ///
+    /// Tuple `(effective_yield_bps, matched_lock_secs)`:
+    /// - `effective_yield_bps`: The selected tier's yield, or base yield if no tier matches
+    /// - `matched_lock_secs`: The matched tier's `min_lock_secs`, or `0` if no tier matched
     ///
     /// # Resolution
     ///
@@ -3897,6 +3936,26 @@ impl LiquifactEscrow {
     /// First deposit only (per investor): optional longer lock and tier ladder from [`DataKey::YieldTierTable`].
     /// Sets [`DataKey::InvestorClaimNotBefore`] when `committed_lock_secs > 0`. Additional principal
     /// from the same investor must use [`LiquifactEscrow::fund`].
+    ///
+    /// # Lock Commitment (`committed_lock_secs`) Bounds
+    ///
+    /// **Valid range**: `0..=u64::MAX` seconds
+    /// - `0` = no lock commitment; investor receives base yield immediately upon settlement
+    /// - `> 0` = lock duration in seconds; sets `InvestorClaimNotBefore = now + committed_lock_secs`
+    ///
+    /// **Constraints**:
+    /// - `now + committed_lock_secs` must not exceed escrow maturity
+    ///   - Rejection: `CommitmentLockExceedsMaturity` if `now + committed_lock_secs > maturity`
+    ///   - Derivation: Prevent investor payout hold beyond principal due date
+    /// - Timestamp addition is checked with overflow guard
+    ///   - Rejection: `InvestorClaimTimeOverflow` if `checked_add(now, committed_lock_secs)` overflows
+    ///   - Derivation: Prevent u64 underflow/overflow in ledger timestamp arithmetic
+    ///
+    /// **Tier selection**:
+    /// - Investor's effective yield is selected at this (first) deposit based on `committed_lock_secs`
+    /// - `effective_yield_for_commitment()` finds the highest-yield tier where `committed_lock_secs >= tier.min_lock_secs`
+    /// - Falls back to base yield if `committed_lock_secs = 0` or no tier table exists
+    /// - This selection is **immutable** across any follow-on deposits with `fund()`
     ///
     /// # Errors
     /// Emits typed [`EscrowError`] codes for the same funding guards as [`LiquifactEscrow::fund`],

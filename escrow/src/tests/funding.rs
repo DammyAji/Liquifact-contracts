@@ -7607,3 +7607,663 @@ fn test_unfund_event_emitted() {
 
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
+
+
+// ─── Issue #807: Yield-Tier Bounds Validation Tests ───────────────────────────────
+
+/// Test bounds validation for init() base yield_bps parameter.
+/// Valid range: 0..=10_000 (basis points; 0% to 100%)
+#[test]
+fn test_init_base_yield_bps_min_valid() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Minimum valid: 0 basis points (0% yield)
+    let escrow = client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "YIELD_MIN"),
+        &sme,
+        &100_000i128,
+        &0i64, // min valid
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+    assert_eq!(escrow.yield_bps, 0, "min valid yield_bps (0) should be accepted");
+}
+
+#[test]
+fn test_init_base_yield_bps_max_valid() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Maximum valid: 10_000 basis points (100% yield)
+    let escrow = client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "YIELD_MAX"),
+        &sme,
+        &100_000i128,
+        &10_000i64, // max valid
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+    assert_eq!(escrow.yield_bps, 10_000, "max valid yield_bps (10_000) should be accepted");
+}
+
+#[test]
+fn test_init_base_yield_bps_over_limit() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Over limit: 10_001 basis points (> 100%)
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "YIELD_OVER"),
+            &sme,
+            &100_000i128,
+            &10_001i64, // over max
+            &0u64,
+            &Address::generate(&env),
+            &None,
+            &Address::generate(&env),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        ),
+        EscrowError::YieldBpsOutOfRange,
+    );
+}
+
+#[test]
+fn test_init_base_yield_bps_negative() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Under limit: negative yield_bps (invalid)
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "YIELD_NEG"),
+            &sme,
+            &100_000i128,
+            &-1i64, // under min (negative)
+            &0u64,
+            &Address::generate(&env),
+            &None,
+            &Address::generate(&env),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        ),
+        EscrowError::YieldBpsOutOfRange,
+    );
+}
+
+/// Test bounds validation for init() protocol_fee_bps parameter.
+/// Valid range: 0..=10_000 (basis points; 0% to 100%)
+#[test]
+fn test_init_protocol_fee_bps_min_valid() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Minimum valid: 0 basis points (0% fee; no treasury routing)
+    let escrow = client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FEE_MIN"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(0i64), // min valid protocol fee
+    );
+    assert!(escrow.invoice_id == symbol_short!("FEE_MIN"));
+}
+
+#[test]
+fn test_init_protocol_fee_bps_max_valid() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Maximum valid: 10_000 basis points (100% fee; entire disbursement to treasury)
+    let escrow = client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FEE_MAX"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10_000i64), // max valid protocol fee
+    );
+    assert!(escrow.invoice_id == symbol_short!("FEE_MAX"));
+}
+
+#[test]
+fn test_init_protocol_fee_bps_over_limit() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Over limit: 10_001 basis points (> 100%)
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "FEE_OVER"),
+            &sme,
+            &100_000i128,
+            &800i64,
+            &0u64,
+            &Address::generate(&env),
+            &None,
+            &Address::generate(&env),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &Some(10_001i64), // over max
+        ),
+        EscrowError::ProtocolFeeBpsOutOfRange,
+    );
+}
+
+#[test]
+fn test_init_protocol_fee_bps_negative() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    // Under limit: negative protocol_fee_bps (invalid)
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "FEE_NEG"),
+            &sme,
+            &100_000i128,
+            &800i64,
+            &0u64,
+            &Address::generate(&env),
+            &None,
+            &Address::generate(&env),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &Some(-1i64), // under min (negative)
+        ),
+        EscrowError::ProtocolFeeBpsOutOfRange,
+    );
+}
+
+/// Test bounds validation for yield tier table items.
+/// Each tier's yield_bps must be in 0..=10_000 and >= base_yield
+#[test]
+fn test_init_tier_yield_bps_min_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    // Tier with minimum valid yield_bps equal to base yield
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 800, // == base_yield (min valid for tier)
+    });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "TIER_YIELD_MIN"),
+        &sme,
+        &100_000i128,
+        &800i64, // base yield
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+}
+
+#[test]
+fn test_init_tier_yield_bps_max_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    // Tier with maximum valid yield_bps
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 10_000, // max valid yield_bps
+    });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "TIER_YIELD_MAX"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_init_tier_yield_bps_over_limit_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    // Tier with over-limit yield_bps (> 100%)
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 10_001, // over max → TierYieldOutOfRange
+    });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "TIER_YIELD_OVER"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_init_tier_yield_bps_negative_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    // Tier with negative yield_bps (invalid)
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: -1, // negative → TierYieldOutOfRange
+    });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "TIER_YIELD_NEG"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+}
+
+/// Test bounds validation for committed_lock_secs in fund_with_commitment.
+/// Valid range: 0..=u64::MAX seconds (all u64 values; but clamped by maturity guard)
+#[test]
+fn test_fund_with_commitment_lock_zero_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "LOCK_ZERO"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let investor = Address::generate(&env);
+    // Zero lock is valid (no commitment)
+    client.fund_with_commitment(&investor, &5_000i128, &0u64);
+}
+
+#[test]
+fn test_fund_with_commitment_lock_large_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    // Maturity set far in the future (100 years in seconds)
+    let far_future = 100u64 * 365u64 * 24u64 * 3600u64; // ~3.15 billion seconds
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "LOCK_LARGE"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &far_future,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let investor = Address::generate(&env);
+    // Large lock value that doesn't exceed maturity
+    let large_lock = 50u64 * 365u64 * 24u64 * 3600u64; // 50 years
+    client.fund_with_commitment(&investor, &5_000i128, &large_lock);
+}
+
+/// Test bounds validation for preview_yield_tier parameters.
+/// lock parameter: valid range 0..=u64::MAX (pure comparison, all values safe)
+#[test]
+fn test_preview_yield_tier_lock_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PREVIEW_ZERO"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    // Zero lock should return base yield
+    let (bps, lock_secs) = client.preview_yield_tier(&1_000i128, &0u64);
+    assert_eq!(bps, 800, "zero lock should return base yield");
+    assert_eq!(lock_secs, 0, "zero lock should return matched_lock_secs=0");
+}
+
+#[test]
+fn test_preview_yield_tier_lock_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PREVIEW_MAX"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    // Max u64 lock should not panic (pure comparison logic, no overflow)
+    let (bps, lock_secs) = client.preview_yield_tier(&1_000i128, &u64::MAX);
+    assert_eq!(bps, 800, "huge lock should still return valid yield");
+    assert_eq!(lock_secs, 0, "no tier exists, so matched_lock_secs=0");
+}
+
+/// Test bounds validation for preview_yield_tier amount parameter.
+/// Note: amount parameter is intentionally unused; all i128 values are valid (no validation needed)
+#[test]
+fn test_preview_yield_tier_amount_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_ZERO"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    // Zero amount should not cause any issues (amount is unused)
+    let (bps, _) = client.preview_yield_tier(&0i128, &0u64);
+    assert_eq!(bps, 800);
+}
+
+#[test]
+fn test_preview_yield_tier_amount_negative() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_NEG"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    // Negative amount should not cause any issues (amount is unused)
+    let (bps, _) = client.preview_yield_tier(&-1_000i128, &0u64);
+    assert_eq!(bps, 800);
+}
+
+#[test]
+fn test_preview_yield_tier_amount_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_MAX"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    // Maximum i128 amount should not cause issues (amount is unused)
+    let (bps, _) = client.preview_yield_tier(&i128::MAX, &0u64);
+    assert_eq!(bps, 800);
+}
