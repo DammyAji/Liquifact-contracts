@@ -2278,6 +2278,35 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Resolve a `(start, limit)` pagination request against a collection of `len` items.
+    ///
+    /// Returns `Some((start, end))` where `end` is exclusive and `end <= len`, or `None` when
+    /// the requested page is entirely out of range (i.e. when `start >= len` or `limit == 0`).
+    /// Arithmetic is saturating: a `start + capped_limit` that would overflow `u32` is clamped
+    /// at `len` rather than wrapping.
+    ///
+    /// The caller is responsible for supplying the appropriate per-operation ceiling as
+    /// `ceiling` so that the returned window never exceeds that cap.
+    ///
+    /// # Arguments
+    /// * `start`   — 0-based index of the first item to include (inclusive).
+    /// * `limit`   — requested page size (caller-supplied, uncapped).
+    /// * `ceiling` — maximum page size enforced by this entrypoint (e.g. [`MAX_INVESTOR_READ_BATCH`]).
+    /// * `len`     — total number of items in the backing collection.
+    ///
+    /// # Returns
+    /// * `Some((start, end))` — the resolved `[start, end)` window.
+    /// * `None`               — the page is empty (out-of-bounds or zero limit).
+    pub(crate) fn paginate_window(start: u32, limit: u32, ceiling: u32, len: u32) -> Option<(u32, u32)> {
+        if start >= len || limit == 0 {
+            return None;
+        }
+        let capped = limit.min(ceiling);
+        // Saturating add: if start + capped would overflow, clamp at len (which is <= u32::MAX).
+        let end = start.saturating_add(capped).min(len);
+        Some((start, end))
+    }
+
     /// Load the current escrow and require admin authorization in one step.
     ///
     /// Consolidates the repeated `let escrow = Self::get_escrow(env.clone()); escrow.admin.require_auth();`
@@ -2648,13 +2677,11 @@ impl LiquifactEscrow {
             .get(&DataKey::InvestorIndex)
             .unwrap_or_else(|| Vec::new(&env));
 
-        let len = index.len();
-        if start >= len || limit == 0 {
-            return Vec::new(&env);
-        }
-
-        let actual_limit = limit.min(MAX_INVESTOR_READ_BATCH);
-        let end = (start + actual_limit).min(len);
+        let (start, end) =
+            match Self::paginate_window(start, limit, MAX_INVESTOR_READ_BATCH, index.len()) {
+                Some(w) => w,
+                None => return Vec::new(&env),
+            };
 
         let mut result = Vec::new(&env);
         for i in start..end {
@@ -2890,15 +2917,16 @@ impl LiquifactEscrow {
         limit: u32,
     ) -> Vec<AttestationDigestInfo> {
         let log = Self::get_attestation_append_log(env.clone());
-        let len = log.len();
-        if start >= len || limit == 0 {
-            return Vec::new(&env);
-        }
+        let capped = limit.min(MAX_ATTESTATION_READ_PAGE);
+        let (scan_start, scan_end) =
+            match Self::paginate_window(start, capped, MAX_ATTESTATION_READ_PAGE, log.len()) {
+                Some(w) => w,
+                None => return Vec::new(&env),
+            };
 
-        let actual_limit = limit.min(MAX_ATTESTATION_READ_PAGE);
         let mut result = Vec::new(&env);
-        let mut i = start;
-        while i < len && result.len() < actual_limit {
+        let mut i = scan_start;
+        while i < scan_end && result.len() < capped {
             if Self::is_attestation_revoked(env.clone(), i) {
                 let digest = log.get(i).unwrap();
                 result.push_back(AttestationDigestInfo {
@@ -3344,13 +3372,11 @@ impl LiquifactEscrow {
             .get(&DataKey::AllowlistIndex)
             .unwrap_or_else(|| Vec::new(&env));
 
-        let len = index.len();
-        if start >= len || limit == 0 {
-            return Vec::new(&env);
-        }
-
-        let actual_limit = limit.min(50);
-        let end = (start + actual_limit).min(len);
+        let (start, end) =
+            match Self::paginate_window(start, limit, MAX_INVESTOR_READ_BATCH, index.len()) {
+                Some(w) => w,
+                None => return Vec::new(&env),
+            };
 
         let mut result = Vec::new(&env);
         for i in start..end {
