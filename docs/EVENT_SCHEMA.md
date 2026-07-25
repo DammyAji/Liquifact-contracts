@@ -33,7 +33,7 @@ short routing symbol passed with `symbol_short!(...)`, such as `funded` or
 
 ## Event Catalog
 
-The current contract defines 38 event structs.
+The current contract defines 39 event structs.
 
 | Rust event | `name` symbol | Entrypoint(s) |
 |---|---:|---|
@@ -74,6 +74,7 @@ The current contract defines 38 event structs.
 | `MaxUniqueInvestorsCapLowered` | `inv_cap` | `lower_max_unique_investors` |
 | `MaxUniqueInvestorsCapRaised` | `raise_cap` | `raise_max_unique_investors` |
 | `MinContributionFloorLowered` | `floor_lo` | `lower_min_contribution_floor` |
+| `PausedChanged` | `paused` | `set_paused` |
 | `PrimaryAttestationBound` | `att_bind` | `bind_primary_attestation_hash` |
 | `ProtocolFeeBpsLowered` | `fee_lo` | `lower_protocol_fee_bps` |
 | `RegistryRefRebound` | `reg_rebind` | `set_registry` |
@@ -636,6 +637,30 @@ Data:
 This event is emitted after both `set_investor_allowlisted` and `set_investors_allowlisted` calls,
 providing a single source of truth for the total allowlist count without needing to aggregate
 individual `al_set` events.
+
+### `PausedChanged`
+
+Emitted when an admin toggles the lightweight operational pause via `set_paused`.
+Orthogonal to `LegalHoldChanged` — it signals the incident-response circuit
+breaker (no compliance semantics, no clear delay), not the compliance hold.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `paused_changed` |
+| 1 | `name` | `Symbol` | `paused` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+
+Data:
+
+| Field | Type | Values |
+|---|---|---|
+| `active` | `u32` | `1` = pause enabled, `0` = cleared |
+
+**Indexer guidance:** filter on `topic[1] == "paused"` to detect pause state changes.
+This event is emitted on every `set_paused` call, including idempotent calls (setting to the same value).
+The pause flag blocks `fund`, `settle`, `withdraw`, and `claim_investor_payout` entrypoints when active.
 
 ## Nested Types
 
