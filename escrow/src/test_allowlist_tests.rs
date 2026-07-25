@@ -893,6 +893,7 @@ fn test_batch_produces_same_per_investor_events_as_individual_calls() {
         &None,
         &None,
         &None,
+        &None,
     );
     let contract_id2 = client2.address.clone();
 

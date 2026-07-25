@@ -98,9 +98,10 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 78 | `NewCapBelowCurrentFunderCount` | `lower_max_unique_investors` | `new_cap < unique funder count` | Cap cannot evict existing funders | typed |
 | 79 | `MaturityUpdateNotOpen` | `update_maturity` | escrow status `!= 0` | Only update maturity while open | typed |
 | 80 | `NewAdminSameAsCurrent` | `propose_admin` | proposed admin equals current admin | Nominate a different admin | typed |
-| 81 | `MaturityUnchanged` | `update_maturity` | `new_maturity == old_maturity` | Use a different maturity | typed |
 | 82 | `FundingBatchEmpty` | `fund_batch` | `entries.len() == 0` | Pass at least one `(investor, amount)` pair | typed |
 | 83 | `FundingBatchTooLarge` | `fund_batch` | `entries.len() > MAX_FUND_BATCH` | Split into smaller batches | typed |
+| 85 | `FundingDeadlineUpdateNotOpen` | `update_funding_deadline` | escrow status `!= 0` | Only update deadline while open | typed |
+| 86 | `MaturityUnchanged` | `update_maturity` | `new_maturity == old_maturity` | Use a different maturity | typed |
 | 90 | `MigrationVersionMismatch` | `migrate` | stored version `!= from_version` | Pass matching `from_version` | typed |
 | 91 | `AlreadyCurrentSchemaVersion` | `migrate` | `from_version >= SCHEMA_VERSION` | No migration needed | typed |
 | 92 | `NoMigrationPath` | `migrate` | `from_version < SCHEMA_VERSION` and no transform implemented | Redeploy or extend `migrate` | typed |

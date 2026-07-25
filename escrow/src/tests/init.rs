@@ -1,5 +1,5 @@
 use super::*;
-use crate::EscrowInitialized;
+use crate::{EscrowInitialized, DEFAULT_MATURITY_MAX_HORIZON_SECS};
 use proptest::prelude::*;
 extern crate std;
 use std::format;
@@ -16,11 +16,10 @@ fn test_init_stores_escrow() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &20000u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
-        &None,
         &None,
         &None,
         &None,
@@ -36,7 +35,7 @@ fn test_init_stores_escrow() {
     assert_eq!(escrow.funding_target, TARGET);
     assert_eq!(escrow.funded_amount, 0);
     assert_eq!(escrow.yield_bps, 800);
-    assert_eq!(escrow.maturity, 1000);
+    assert_eq!(escrow.maturity, 20000);
     assert_eq!(escrow.status, 0);
 }
 
@@ -50,11 +49,10 @@ fn test_init_stores_keyed_invoice_and_lists_it() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
-        &None,
         &None,
         &None,
         &None,
@@ -77,11 +75,10 @@ fn test_init_requires_admin_auth() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
-        &None,
         &None,
         &None,
         &None,
@@ -142,6 +139,7 @@ fn test_init_unauthorized_panics() {
             &None,
             &None,
             &None,
+            &None,
         );
     }));
     assert!(result.is_err(), "Expected panic without auth");
@@ -174,11 +172,10 @@ fn test_cost_baseline_init() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
-        &None,
         &None,
         &None,
         &None,
@@ -210,7 +207,6 @@ fn test_cost_baseline_init_zero_maturity() {
         &None,
         &None,
         &None,
-        &None,
     );
 }
 
@@ -222,13 +218,12 @@ fn test_cost_baseline_init_max_amount() {
         &admin,
         &soroban_sdk::String::from_str(&env, "INV102"),
         &sme,
-        &i128::MAX,
+        &crate::MAX_INVOICE_AMOUNT,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
-        &None,
         &None,
         &None,
         &None,
@@ -265,7 +260,6 @@ fn test_init_invoice_id_empty_string_panics() {
         &None,
         &None,
         &None,
-        &None,
     );
 }
 
@@ -288,7 +282,6 @@ fn test_init_invoice_id_whitespace_panics() {
         &t,
         &None,
         &tr,
-        &None,
         &None,
         &None,
         &None,
@@ -326,7 +319,6 @@ fn test_init_invoice_id_too_long_panics() {
         &None,
         &None,
         &None,
-        &None,
     );
 }
 
@@ -356,7 +348,6 @@ fn test_init_invoice_id_bad_charset_hyphen_panics() {
         &None,
         &None,
         &None,
-        &None,
     );
 }
 
@@ -368,10 +359,10 @@ fn test_init_invoice_id_non_ascii_multibyte_panics() {
     let client = deploy(&env);
     let (admin, sme) = (Address::generate(&env), Address::generate(&env));
     let (t, tr) = free_addresses(&env);
-    // "INV-­ƒÆ®" contains multi-byte UTF-8
+    // "INV_🚀" contains multi-byte UTF-8
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "INV_­ƒÆ®"),
+        &soroban_sdk::String::from_str(&env, "INV_🚀"),
         &sme,
         &1000i128,
         &500i64,
@@ -379,7 +370,6 @@ fn test_init_invoice_id_non_ascii_multibyte_panics() {
         &t,
         &None,
         &tr,
-        &None,
         &None,
         &None,
         &None,
@@ -430,7 +420,6 @@ fn test_init_stores_registry_some_and_getters() {
         &token,
         &Some(reg.clone()),
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -495,7 +484,6 @@ fn test_init_min_contribution_floor_defaults_to_zero() {
         &tok,
         &None,
         &tre,
-        &None,
         &None,
         &None,
         &None,
@@ -625,11 +613,10 @@ fn test_get_funding_token_after_init_succeeds() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &token,
         &None,
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -652,11 +639,10 @@ fn test_get_treasury_after_init_succeeds() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &token,
         &None,
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -701,7 +687,6 @@ fn test_init_registry_none_roundtrip() {
         &None,
         &None,
         &None,
-        &None,
     );
     assert_eq!(client.get_registry_ref(), None);
 }
@@ -730,7 +715,6 @@ fn test_init_escrow_initialized_event_includes_bound_refs() {
         &token,
         &Some(registry.clone()),
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -784,7 +768,6 @@ fn test_init_escrow_initialized_event_registry_none() {
         &None,
         &None,
         &None,
-        &None,
     );
 
     assert_eq!(
@@ -823,6 +806,7 @@ fn try_init_with_id(env: &Env, id: &str) -> Result<(), ()> {
             &t,
             &None,
             &tr,
+            &None,
             &None,
             &None,
             &None,
@@ -871,7 +855,6 @@ fn test_invoice_id_length_33_panics() {
         &t,
         &None,
         &tr,
-        &None,
         &None,
         &None,
         &None,
@@ -1088,12 +1071,12 @@ fn datakey_distributed_principal_starts_at_zero_and_increments_on_refund() {
         &None,
         &None,
         &None,
-        &None,
     );
 
     assert_eq!(client.get_distributed_principal(), 0i128);
 
-    token.stellar.mint(&client.address, &500i128);
+    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from.
+    token.stellar.mint(&investor, &500i128);
     client.fund(&investor, &500i128);
     client.cancel_funding();
 
@@ -1126,6 +1109,7 @@ fn test_init_maturity_zero_accepted() {
         &None,
         &None,
         &None,
+        &None,
     );
     assert_eq!(client.get_escrow().maturity, 0);
 }
@@ -1146,6 +1130,7 @@ fn test_init_maturity_within_horizon_accepted() {
         &token,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
@@ -1180,59 +1165,66 @@ fn test_init_maturity_at_horizon_boundary_accepted() {
         &None,
         &None,
         &None,
+        &None,
     );
     assert_eq!(client.get_escrow().maturity, at_boundary);
 }
 
 #[test]
-#[should_panic(expected = "MaturityExceedsMaxHorizon")]
 fn test_init_maturity_beyond_horizon_rejected() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     let (token, treasury) = free_addresses(&env);
     env.ledger().set_timestamp(1000);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAT03"),
-        &sme,
-        &1000i128,
-        &800i64,
-        &(1000u64 + DEFAULT_MATURITY_MAX_HORIZON_SECS + 1),
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "MAT03"),
+            &sme,
+            &1000i128,
+            &800i64,
+            &(1000u64 + DEFAULT_MATURITY_MAX_HORIZON_SECS + 1),
+            &token,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+        ),
+        EscrowError::MaturityExceedsMaxHorizon,
     );
 }
 
 #[test]
-#[should_panic(expected = "MaturityInPast")]
 fn test_init_maturity_in_past_rejected() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     let (token, treasury) = free_addresses(&env);
     env.ledger().set_timestamp(2000);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAT04"),
-        &sme,
-        &1000i128,
-        &800i64,
-        &1000u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "MAT04"),
+            &sme,
+            &1000i128,
+            &800i64,
+            &1000u64,
+            &token,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+        ),
+        EscrowError::MaturityInPast,
     );
 }
 
@@ -1259,6 +1251,7 @@ fn test_init_with_custom_horizon_used() {
         &None,
         &None,
         &Some(short_horizon),
+        &None,
     );
     assert_eq!(client.get_maturity_max_horizon(), short_horizon);
     assert_eq!(client.get_escrow().maturity, 3000);
@@ -1288,6 +1281,7 @@ fn test_update_maturity_zero_accepted() {
         &None,
         &None,
         &None,
+        &None,
     );
     let updated = client.update_maturity(&0u64);
     assert_eq!(updated.maturity, 0);
@@ -1309,6 +1303,7 @@ fn test_update_maturity_within_horizon_accepted() {
         &token,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
@@ -1343,6 +1338,7 @@ fn test_update_maturity_at_horizon_boundary_accepted() {
         &None,
         &None,
         &None,
+        &None,
     );
     let at_boundary = now + DEFAULT_MATURITY_MAX_HORIZON_SECS;
     let updated = client.update_maturity(&at_boundary);
@@ -1350,7 +1346,6 @@ fn test_update_maturity_at_horizon_boundary_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "MaturityExceedsMaxHorizon")]
 fn test_update_maturity_beyond_horizon_rejected() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
@@ -1372,12 +1367,15 @@ fn test_update_maturity_beyond_horizon_rejected() {
         &None,
         &None,
         &None,
+        &None,
     );
-    client.update_maturity(&(1000u64 + DEFAULT_MATURITY_MAX_HORIZON_SECS + 1));
+    assert_contract_error(
+        client.try_update_maturity(&(1000u64 + DEFAULT_MATURITY_MAX_HORIZON_SECS + 1)),
+        EscrowError::MaturityExceedsMaxHorizon,
+    );
 }
 
 #[test]
-#[should_panic(expected = "MaturityInPast")]
 fn test_update_maturity_in_past_rejected() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
@@ -1399,8 +1397,12 @@ fn test_update_maturity_in_past_rejected() {
         &None,
         &None,
         &None,
+        &None,
     );
-    client.update_maturity(&1000u64);
+    assert_contract_error(
+        client.try_update_maturity(&1000u64),
+        EscrowError::MaturityInPast,
+    );
 }
 
 // ── update_maturity_max_horizon ─────────────────────────────────────────
@@ -1427,6 +1429,7 @@ fn test_update_maturity_max_horizon_by_admin() {
         &None,
         &None,
         &None,
+        &None,
     );
     // Default horizon is DEFAULT_MATURITY_MAX_HORIZON_SECS
     assert_eq!(
@@ -1443,7 +1446,6 @@ fn test_update_maturity_max_horizon_by_admin() {
 }
 
 #[test]
-#[should_panic(expected = "MaturityExceedsMaxHorizon")]
 fn test_update_maturity_honors_reduced_horizon() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
@@ -1465,7 +1467,11 @@ fn test_update_maturity_honors_reduced_horizon() {
         &None,
         &None,
         &None,
+        &None,
     );
     client.update_maturity_max_horizon(&3600u64); // 1 hour
-    client.update_maturity(&(1000u64 + 7200u64)); // 2 hours — exceeds new 1h horizon
+    assert_contract_error(
+        client.try_update_maturity(&(1000u64 + 7200u64)), // 2 hours — exceeds new 1h horizon
+        EscrowError::MaturityExceedsMaxHorizon,
+    );
 }

@@ -58,8 +58,6 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
     );
 
     // We will not fund or settle ├ö├ç├Â just exercise legal hold at multiple points.
@@ -531,8 +529,6 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
         &None,
         &None,
         &None,
-        &None,
-        &None,
     );
 
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
@@ -765,8 +761,6 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
     );
 
     // Initial funding succeeds while hold is off.
@@ -891,15 +885,13 @@ fn setup_withdraw_with_token<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None,
     );
 
     let investor = soroban_sdk::Address::generate(env);
+    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
+    // that transfer moves `target` tokens into the escrow contract for withdraw() to send.
+    sac_admin.mint(&investor, &target);
     client.fund(&investor, &target);
-
-    // Mint the funded amount into the escrow contract so withdraw() can send it.
-    sac_admin.mint(&escrow_id, &target);
 
     (client, escrow_id, token, sme)
 }
@@ -947,6 +939,7 @@ fn test_cancel_refund_sweep_liability_floor() {
         &None,
         &None,
         &None,
+        &None,
     );
 
     // Two investors fund while escrow remains OPEN (status 0)
@@ -954,14 +947,18 @@ fn test_cancel_refund_sweep_liability_floor() {
     let inv2 = Address::generate(&env);
     let a1 = 200_000i128;
     let a2 = 300_000i128;
+    // Mint to each investor first so `fund`'s inbound transfer has a balance to pull from;
+    // those transfers move `total` tokens into the escrow contract.
+    sac.stellar.mint(&inv1, &a1);
+    sac.stellar.mint(&inv2, &a2);
     client.fund(&inv1, &a1);
     client.fund(&inv2, &a2);
     let total = a1 + a2;
     assert_eq!(client.get_escrow().funded_amount, total);
 
-    // Mint funded_amount + extra dust into the escrow contract
+    // Mint extra dust directly into the escrow contract (on top of `total` already there).
     let extra = 50_000i128;
-    sac.stellar.mint(&escrow_id, &(total + extra));
+    sac.stellar.mint(&escrow_id, &extra);
 
     // Cancel funding (admin)
     client.cancel_funding();
@@ -1105,8 +1102,6 @@ fn withdraw_rejected_wrong_status_open() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
     );
     // No funding ├ö├ç├Â status is 0.
     client.withdraw(); // must panic: WithdrawalNotFunded
@@ -1142,8 +1137,6 @@ fn withdraw_rejected_insufficient_contract_balance() {
         &token_id,
         &None,
         &soroban_sdk::Address::generate(&env),
-        &None,
-        &None,
         &None,
         &None,
         &None,
@@ -1188,23 +1181,24 @@ fn withdraw_event_includes_recipient() {
     let target = 5_000_000i128;
     let (client, escrow_id, _token, sme) = setup_withdraw_with_token(&env, target, "WD_EV001");
 
+    // Read the invoice id before the mutating call so we don't need another
+    // contract call afterward — each invocation clears the host event buffer.
+    let invoice_id = client.get_escrow().invoice_id;
+
     client.withdraw();
 
-    // Collect events BEFORE making any further contract calls — each new
-    // invocation clears the host event buffer.
-    let all_events = env.events().all();
-    let escrow = client.get_escrow();
-
+    // Collect events immediately after the mutating call, before any further
+    // contract calls clear the host event buffer.
     let expected_xdr = SmeWithdrew {
         name: symbol_short!("sme_wd"),
-        invoice_id: escrow.invoice_id.clone(),
+        invoice_id,
         amount: target,
         recipient: sme,
     }
     .to_xdr(&env, &escrow_id);
 
     let all_events = env.events().all().filter_by_contract(&escrow_id);
-    let found = all_events.events().iter().any(|e| *e == expected_xdr);
+    let found = all_events.events().contains(&expected_xdr);
     assert!(
         found,
         "SmeWithdrew event with correct recipient and amount must be emitted"
