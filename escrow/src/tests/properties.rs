@@ -2,42 +2,6 @@ use super::*;
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 
-fn init_funded_escrow_with_real_token<'a>(
-    env: &'a Env,
-    client: &LiquifactEscrowClient<'a>,
-    admin: &Address,
-    sme: &Address,
-    investor: &Address,
-    target: i128,
-    invoice_id: &str,
-) -> Address {
-    let token = install_stellar_asset_token(env);
-    client.init(
-        admin,
-        &soroban_sdk::String::from_str(env, invoice_id),
-        sme,
-        &target,
-        &800i64,
-        &0u64,
-        &token.id,
-        &None,
-        &Address::generate(env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-    );
-
-    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
-    // that transfer moves `target` tokens into the escrow contract.
-    token.stellar.mint(investor, &target);
-    client.fund(investor, &target);
-    client.address.clone()
-}
-
 proptest! {
     #[test]
     fn prop_funded_amount_non_decreasing(
@@ -69,8 +33,9 @@ proptest! {
             &None,
             &None,
             &None,
-            &None,
-        );
+        &None,
+        &None,
+        &None::<i64>);
 
         let before = client.get_escrow().funded_amount;
         client.fund(&investor1, &amount1);
@@ -112,8 +77,9 @@ proptest! {
             &None,
             &None,
             &None,
-            &None,
-        );
+        &None,
+        &None,
+        &None::<i64>);
         prop_assert_eq!(escrow.status, 0);
 
         let after_fund = client.fund(&investor, &amount);
@@ -198,8 +164,9 @@ proptest! {
             &max_per_investor,
             &None,
             &None,
-            &None,
-        );
+        &None,
+        &None,
+        &None::<i64>);
 
         let investors: Vec<Address> = (0..investor_count)
             .map(|_| Address::generate(&env))
@@ -376,6 +343,8 @@ fn prop_status_transitions_open_to_funded_only() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     let initial = client.get_escrow();
@@ -416,6 +385,8 @@ fn prop_status_settle_transition() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -455,10 +426,10 @@ fn prop_status_withdraw_transition() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
-    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
-    // that transfer moves `target` tokens into the escrow contract for withdraw() to use.
     token.stellar.mint(&investor, &target);
     client.fund(&investor, &target);
 
@@ -500,6 +471,8 @@ fn prop_no_regression_from_funded_status() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -541,10 +514,10 @@ fn prop_no_regression_after_withdraw() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
-    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
-    // that transfer moves `target` tokens into the escrow contract for withdraw() to use.
     token.stellar.mint(&investor, &target);
     client.fund(&investor, &target);
     let withdrawn = client.withdraw();
@@ -582,6 +555,8 @@ fn prop_settled_is_terminal_for_settle() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -619,10 +594,10 @@ fn prop_withdrawn_is_terminal_for_withdraw() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
-    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
-    // that transfer moves `target` tokens into the escrow contract for withdraw() to use.
     token.stellar.mint(&investor, &target);
     client.fund(&investor, &target);
     client.withdraw();
@@ -658,6 +633,8 @@ fn prop_status_invariant_all_states_valid_range() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     assert!(client.get_escrow().status == 0);
@@ -700,6 +677,8 @@ fn prop_funded_amount_sum_of_contributions() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     let inv1 = Address::generate(&env);
@@ -752,6 +731,8 @@ fn prop_funded_amount_respects_funding_target() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     let fund_amount = target + excess;
@@ -792,6 +773,8 @@ fn prop_funded_amount_non_decreasing_across_multiple_funders() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     let amt1: i128 = 50_000_000_000i128;
@@ -846,6 +829,8 @@ fn prop_funded_amount_equals_contribution_sum_for_funded_escrow() {
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     let amounts: [i128; 3] = [50_000_000_000i128, 100_000_000_000i128, 50_000_000_000i128];
@@ -966,6 +951,8 @@ fn fuzz_multi_investor_fund_ordering_snapshot_once_only() {
             &None,
             &None,
             &None,
+            &None,
+            &None::<i64>,
         );
 
         // Randomize investor count/order and positive amounts. Keep the sequence small so
@@ -1192,6 +1179,8 @@ fn funded_and_settled_escrow<'a>(
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
 
     for (investor, amount) in contributions {
@@ -1548,9 +1537,8 @@ fn cancelled_escrow<'a>(
     let sme = Address::generate(env);
     let (token, treasury) = free_addresses(env);
     let total: i128 = contributions.iter().map(|(_, a)| a).sum();
-    // Target must stay above the total contributed, or the escrow flips to
-    // "funded" (status 1) and `cancel_funding` (which requires status 0) panics.
-    let target = total + 1;
+    // Target must exceed total so fund() leaves status at 0 (open), allowing cancel_funding.
+    let target = total + 1_000_000_000;
     client.init(
         &admin,
         &soroban_sdk::String::from_str(env, invoice_id),
@@ -1568,6 +1556,8 @@ fn cancelled_escrow<'a>(
         &None,
         &None,
         &None,
+        &None,
+        &None::<i64>,
     );
     for (investor, amount) in contributions {
         client.fund(investor, amount);
@@ -1604,7 +1594,7 @@ fn fuzz_dust_sweep_liability_floor() {
         .unwrap_or(32);
     let base_seed = read_fuzz_seed_u64();
     for case_idx in 0..cases {
-        let case_seed = base_seed ^ (case_idx as u64).wrapping_mul(0xFF51AFD7ED558CCDu64);
+        let case_seed = base_seed ^ (case_idx as u64).wrapping_mul(0xD0575_0000_0001u64);
         let mut rng = SplitMix64::new(case_seed);
         let env = Env::default();
         env.mock_all_auths();
@@ -1624,7 +1614,8 @@ fn fuzz_dust_sweep_liability_floor() {
         let mut order: Vec<usize> = (0..n).collect();
         shuffle_in_place(&mut rng, &mut order);
         let mut distributed: i128 = 0;
-        for &idx in order.iter().take(refund_count.min(n)) {
+        for i in 0..refund_count.min(n) {
+            let idx = order[i];
             let ra = rng.gen_i128_inclusive(0, amounts[idx]);
             if ra > 0 {
                 client.refund(&investors[idx]);
