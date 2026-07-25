@@ -6298,6 +6298,146 @@ fn test_get_yield_tiers_is_pure_read_no_state_change() {
     );
 }
 
+#[test]
+fn test_get_yield_tiers_page_returns_empty_when_no_tiers_configured() {
+    let env = Env::default();
+
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EMPTY01"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let page = client.get_yield_tiers_page(&0, &2);
+
+    assert_eq!(page.len(), 0, "empty storage should return an empty page");
+}
+
+#[test]
+fn test_get_yield_tiers_page_pagination() {
+    let env = Env::default();
+
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+
+    let admin = Address::generate(&env);
+
+    let sme = Address::generate(&env);
+
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+
+    let tier_specs = [
+        (0u64, 900i64),
+        (1u64, 950i64),
+        (2u64, 1_000i64),
+        (3u64, 1_050i64),
+        (4u64, 1_100i64),
+    ];
+
+    for (index, (base_lock, yield_bps)) in tier_specs.iter().enumerate() {
+        tiers.push_back(YieldTier {
+            min_lock_secs: *base_lock + (index as u64) * 60_000,
+            yield_bps: *yield_bps,
+        });
+    }
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PAGE01"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let empty = client.get_yield_tiers_page(&0, &0);
+    assert_eq!(empty.len(), 0, "limit zero should return an empty page");
+
+    let page1 = client.get_yield_tiers_page(&0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().min_lock_secs, 0u64);
+    assert_eq!(page1.get(0).unwrap().yield_bps, 900i64);
+    assert_eq!(page1.get(1).unwrap().min_lock_secs, 60_001u64);
+    assert_eq!(page1.get(1).unwrap().yield_bps, 950i64);
+
+    let page2 = client.get_yield_tiers_page(&2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().min_lock_secs, 120_002u64);
+    assert_eq!(page2.get(0).unwrap().yield_bps, 1_000i64);
+    assert_eq!(page2.get(1).unwrap().min_lock_secs, 180_003u64);
+    assert_eq!(page2.get(1).unwrap().yield_bps, 1_050i64);
+
+    let page3 = client.get_yield_tiers_page(&4, &2);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().min_lock_secs, 240_004u64);
+    assert_eq!(page3.get(0).unwrap().yield_bps, 1_100i64);
+
+    let page4 = client.get_yield_tiers_page(&6, &2);
+    assert_eq!(
+        page4.len(),
+        0,
+        "start beyond end should return an empty page"
+    );
+
+    let capped = client.get_yield_tiers_page(&0, &(crate::MAX_INVESTOR_READ_BATCH + 10));
+    assert_eq!(
+        capped.len(),
+        5,
+        "limit above the pagination ceiling should be clamped"
+    );
+
+    let mut collected = SorobanVec::new(&env);
+    for page in [page1.clone(), page2.clone(), page3.clone()] {
+        for i in 0..page.len() {
+            collected.push_back(page.get(i).unwrap());
+        }
+    }
+
+    assert_eq!(
+        collected.len(),
+        5,
+        "pagination should not skip or duplicate tiers across pages"
+    );
+}
+
 // ---------------------------------------------------------------------------
 
 // preview_yield_tier vs fund_with_commitment equivalence tests (issue #562)

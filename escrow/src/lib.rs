@@ -2665,6 +2665,34 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns a paginated view of the configured yield-tier ladder.
+    ///
+    /// Reads the same immutable table as [`LiquifactEscrow::get_yield_tiers`] and preserves
+    /// the validated ordering enforced at `init`.
+    ///
+    /// # Arguments
+    /// * `start` - The starting index (0-based) of the pagination.
+    /// * `limit` - The maximum number of yield tiers to return (capped at [`MAX_INVESTOR_READ_BATCH`]).
+    ///
+    /// # Returns
+    /// A `Vec<YieldTier>` containing the yield tiers within the requested page.
+    pub fn get_yield_tiers_page(env: Env, start: u32, limit: u32) -> Vec<YieldTier> {
+        let tiers = Self::get_yield_tiers(env.clone());
+        let len = tiers.len();
+        if start >= len || limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let actual_limit = limit.min(MAX_INVESTOR_READ_BATCH);
+        let end = (start + actual_limit).min(len);
+
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            result.push_back(tiers.get(i).unwrap());
+        }
+        result
+    }
+
     /// Pure read — no auth, no storage writes, safe for simulation.
     ///
     /// Returns `(effective_yield_bps, matched_lock_secs)` for a hypothetical contribution of
