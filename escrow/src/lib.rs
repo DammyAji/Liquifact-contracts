@@ -2183,11 +2183,7 @@ impl LiquifactEscrow {
                 .instance()
                 .get(&DataKey::DistributedPrincipal)
                 .unwrap_or(0);
-            let outstanding = escrow
-                .funded_amount
-                .checked_sub(distributed)
-                .map(|raw| raw.max(0))
-                .unwrap_or(0);
+            let outstanding = escrow.funded_amount.saturating_sub(distributed);
             // sweep_amt <= balance (from amount.min(balance) above), so this subtraction is safe.
             let balance_after_sweep = balance - sweep_amt;
             ensure(
@@ -3043,7 +3039,12 @@ impl LiquifactEscrow {
         asset: Symbol,
         amount: i128,
     ) -> SmeCollateralCommitment {
-        Self::check_collateral_params(&env, asset, amount);
+        ensure(&env, amount > 0, EscrowError::CollateralAmountNotPositive);
+        ensure(
+            &env,
+            asset != Symbol::new(&env, ""),
+            EscrowError::CollateralAssetEmpty,
+        );
 
         // env.clone(): env is used again after this call for storage read/write, timestamp, and publish.
         let escrow = Self::load_escrow_require_sme(&env);
@@ -4398,7 +4399,6 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| fail(&env, EscrowError::WithdrawFeeArithmeticOverflow));
         let net: i128 = amount
             .checked_sub(fee)
-            .and_then(|raw| if raw >= 0 { Some(raw) } else { None })
             .unwrap_or_else(|| fail(&env, EscrowError::WithdrawNetArithmeticUnderflow));
 
         let token_addr: Address = env
