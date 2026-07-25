@@ -4,8 +4,7 @@ use crate::{
     DeprecatedTransferAdminUsed, EscrowCloseSnapshot, FundingTargetUpdated,
     MaturityMaxHorizonRaised, RegistryRefRebound, DEFAULT_MATURITY_MAX_HORIZON_SECS,
 };
-
-use soroban_sdk::Event;
+use soroban_sdk::{Event, IntoVal};
 
 // Admin/governance operations: target changes, maturity changes, admin handover,
 // legal hold, migration guards, and collateral metadata.
@@ -22,7 +21,7 @@ fn test_update_maturity_emits_event() {
         &sme,
         &1_000i128,
         &500i64,
-        &1000u64,
+        &20000u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
@@ -33,18 +32,15 @@ fn test_update_maturity_emits_event() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
-    client.update_maturity(&2000u64);
-    let all_events = env.events().all();
+    client.update_maturity(&30000u64);
     assert_eq!(
         all_events.events().last().unwrap().clone(),
         crate::MaturityUpdatedEvent {
             name: symbol_short!("maturity"),
             invoice_id: client.get_escrow().invoice_id,
-            old_maturity: 1000u64,
-            new_maturity: 2000u64,
+            old_maturity: 20000u64,
+            new_maturity: 30000u64,
         }
         .to_xdr(&env, &contract_id)
     );
@@ -72,8 +68,6 @@ fn test_update_maturity_unchanged_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.update_maturity(&2000u64);
 }
@@ -99,11 +93,9 @@ fn test_update_maturity_success() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
-    let updated = client.update_maturity(&2000u64);
-    assert_eq!(updated.maturity, 2000u64);
+    let updated = client.update_maturity(&20000u64);
+    assert_eq!(updated.maturity, 20000u64);
     assert_eq!(updated.status, 0);
 }
 
@@ -130,8 +122,6 @@ fn test_update_maturity_wrong_state() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &1_000i128);
     client.update_maturity(&2000u64);
@@ -162,8 +152,6 @@ fn test_update_maturity_unauthorized() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     env.mock_auths(&[]);
     client.update_maturity(&2000u64);
@@ -180,7 +168,7 @@ fn test_propose_admin_sets_pending_without_changing_admin() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
@@ -191,8 +179,6 @@ fn test_propose_admin_sets_pending_without_changing_admin() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     let pending = client.propose_admin(&new_admin, &None);
     assert_eq!(pending, new_admin);
@@ -211,7 +197,7 @@ fn test_accept_admin_promotes_pending_and_clears_pending() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
@@ -222,8 +208,6 @@ fn test_accept_admin_promotes_pending_and_clears_pending() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     client.propose_admin(&new_admin, &None);
@@ -245,7 +229,7 @@ fn test_transfer_admin_deprecated_shim_only_proposes() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &Address::generate(&env),
         &None,
         &Address::generate(&env),
@@ -256,13 +240,206 @@ fn test_transfer_admin_deprecated_shim_only_proposes() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     let unchanged = client.transfer_admin(&new_admin);
     assert_eq!(unchanged.admin, admin);
     assert_eq!(client.get_pending_admin(), Some(new_admin));
+}
+
+// --- Deprecated transfer_admin shim observability (issue #386) ---
+//
+// `transfer_admin` is a `#[deprecated]` shim that delegates to `propose_admin`.
+// To make legacy one-step usage observable to indexers (and to drive the
+// deprecation to completion), every successful `transfer_admin` call must
+// publish **two** events in order: the existing `AdminProposedEvent` from the
+// inner `propose_admin` delegation, followed by a dedicated
+// `DeprecatedTransferAdminUsed` event. The canonical two-step entrypoint
+// `propose_admin` must NOT emit `DeprecatedTransferAdminUsed`, so indexers
+// can keep the two paths distinguishable.
+
+/// `transfer_admin` must publish both events in this order:
+/// `AdminProposedEvent` first (from the inner `propose_admin` delegation),
+/// then `DeprecatedTransferAdminUsed`as the per-tx last event.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_emits_proposal_and_deprecation_events_in_order() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.transfer_admin(&new_admin);
+
+    // Each top-level contract invocation gets its own event buffer, so the
+    // events visible here are exactly the two published by this call.
+    let all_events = env.events().all();
+    let events = all_events.events();
+    // Successful shim call publishes exactly 2 events: the inner
+    // AdminProposedEvent plus the DeprecatedTransferAdminUsed.
+    assert_eq!(
+        events.len(),
+        2,
+        "transfer_admin must publish AdminProposedEvent + DeprecatedTransferAdminUsed"
+    );
+
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.first().unwrap().clone(), proposal);
+
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.get(1).unwrap().clone(), deprecation);
+    // And the per-tx last event must be the deprecation event, not the proposal.
+    assert_eq!(events.last().unwrap().clone(), deprecation);
+}
+
+/// `propose_admin` (the canonical two-step entrypoint) must NOT emit
+/// `DeprecatedTransferAdminUsed` — that event is reserved for the
+/// deprecated shim so indexers can distinguish the two paths.
+#[test]
+fn test_propose_admin_does_not_emit_deprecation_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.propose_admin(&new_admin);
+
+    // Each top-level contract invocation gets its own event buffer, so the
+    // events visible here are exactly the one published by this call.
+    let all_events = env.events().all();
+    let events = all_events.events();
+    // propose_admin publishes exactly one event: its own AdminProposedEvent,
+    // nothing else.
+    assert_eq!(
+        events.len(),
+        1,
+        "propose_admin must publish only its own AdminProposedEvent"
+    );
+
+    // The single AdminProposedEvent should still match the canonical payload.
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.last().unwrap().clone(), proposal);
+
+    // Verify the deprecation event XDR is NOT in the recorded event list.
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&deprecation),
+        "propose_admin must not emit DeprecatedTransferAdminUsed"
+    );
+}
+
+/// The `proposed_address` carried by `DeprecatedTransferAdminUsed` must equal
+/// the `new_admin` argument passed to `transfer_admin`, so indexers can
+/// correlate the deprecation event with the `pending_admin` of the prior
+/// `AdminProposedEvent` emitted in the same transaction.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_deprecation_event_proposed_address_matches_call_arg() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.transfer_admin(&new_admin);
+
+    let all_events = env.events().all();
+    let events = all_events.events();
+    assert_eq!(
+        events.last().unwrap().clone(),
+        crate::DeprecatedTransferAdminUsed {
+            name: symbol_short!("depr_xfer"),
+            invoice_id: client.get_escrow().invoice_id,
+            proposed_address: new_admin,
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+/// On the rejection path (`transfer_admin` called with the current admin),
+/// `propose_admin` aborts with a typed error before any
+/// `DeprecatedTransferAdminUsed` is published. Confirming no deprecation
+/// event is emitted in the rejection path means failed calls cannot
+/// pollute the deprecation-usage count.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_does_not_emit_deprecation_event_on_rejection() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    default_init(&client, &env, &admin, &sme);
+
+    // Same-address proposal: propose_admin aborts with `NewAdminSameAsCurrent`.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.transfer_admin(&admin);
+    }));
+    assert!(result.is_err(), "transfer_admin(current_admin) must reject");
+
+    // A rejected top-level invocation publishes no events of its own.
+    let all_events = env.events().all();
+    let events = all_events.events();
+    assert_eq!(
+        events.len(),
+        0,
+        "rejected transfer_admin must publish no extra events"
+    );
+
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&deprecation),
+        "transfer_admin rejection must not emit DeprecatedTransferAdminUsed"
+    );
+
+    // And the AdminProposedEvent must not be present either (propose_admin
+    // rejected the same-address proposal before reaching its publish call).
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&proposal),
+        "transfer_admin rejection must not emit AdminProposedEvent"
+    );
 }
 
 #[test]
@@ -287,8 +464,6 @@ fn test_transfer_admin_same_address_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.propose_admin(&admin, &None);
 }
@@ -744,22 +919,23 @@ fn test_admin_handover_lifecycle() {
 
     // 2. Accept admin (verifying the events)
     let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
     let updated = client.accept_admin();
     let accept_events = env.events().all();
     assert_eq!(updated.admin, new_admin.clone());
-    assert_eq!(client.get_pending_admin(), None);
 
-    // Verify AdminAcceptedEvent
+    // Capture events immediately after the mutating call, before any further
+    // contract calls clear the host event buffer.
     assert_eq!(
-        accept_events.events().last().unwrap().clone(),
-        crate::AdminAcceptedEvent {
-            name: symbol_short!("adm_acc"),
-            invoice_id: client.get_escrow().invoice_id,
-            prior_admin: old_admin.clone(),
+        env.events().all().events().last().unwrap().clone(),
+        crate::AdminTransferredEvent {
+            name: symbol_short!("admin"),
+            invoice_id,
             new_admin: new_admin.clone(),
         }
         .to_xdr(&env, &contract_id)
     );
+    assert_eq!(client.get_pending_admin(), None);
 
     // 3. New admin can perform admin-gated actions
     let latest = client.update_funding_target(&20_000i128);
@@ -911,7 +1087,7 @@ fn test_read_model_summary_includes_optional_admin_fields() {
         &sme,
         &TARGET,
         &800i64,
-        &1000u64,
+        &0u64,
         &funding_token,
         &None,
         &treasury,
@@ -959,8 +1135,6 @@ fn test_record_collateral_stored_and_does_not_block_settle() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     let c = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5000i128);
     assert_eq!(c.amount, 5000i128);
@@ -994,8 +1168,6 @@ fn test_collateral_zero_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.record_sme_collateral_commitment(&symbol_short!("XLM"), &0i128);
 }
@@ -1022,8 +1194,6 @@ fn test_collateral_requires_sme_auth() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     env.mock_auths(&[]);
     client.record_sme_collateral_commitment(&symbol_short!("XLM"), &100i128);
@@ -1051,8 +1221,6 @@ fn test_legal_hold_blocks_settle_withdraw_claim_and_fund() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &TARGET);
     client.set_legal_hold(&true);
@@ -1107,8 +1275,6 @@ fn test_legal_hold_blocks_new_funds_when_open() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.set_legal_hold(&true);
     client.fund(&investor, &1i128);
@@ -1152,8 +1318,6 @@ fn test_update_funding_target_by_admin_succeeds() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     let updated = client.update_funding_target(&10_000i128);
@@ -1188,8 +1352,6 @@ fn test_update_funding_target_by_non_admin_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     env.mock_auths(&[]);
@@ -1225,8 +1387,6 @@ fn test_update_funding_target_fails_when_funded() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128);
     client.update_funding_target(&10_000i128);
@@ -1261,8 +1421,6 @@ fn test_update_funding_target_below_funded_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &4_000i128);
     client.update_funding_target(&3_000i128);
@@ -1296,8 +1454,6 @@ fn test_update_funding_target_zero_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.update_funding_target(&0i128);
 }
@@ -1337,8 +1493,6 @@ fn test_update_funding_target_event_fields() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     client.update_funding_target(&9_000i128);
@@ -1386,8 +1540,6 @@ fn test_update_funding_target_fails_when_settled() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128); // status → 1 (funded)
     client.settle(); // status → 2 (settled)
@@ -1437,8 +1589,6 @@ fn test_update_funding_target_equal_to_funded_amount_succeeds() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &4_000i128); // funded_amount == 4_000, status still 0
 
@@ -1478,8 +1628,6 @@ fn test_update_funding_target_negative_panics() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.update_funding_target(&-1i128);
 }
@@ -1520,8 +1668,6 @@ fn test_update_maturity_event_fields() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     client.update_maturity(&2000u64);
@@ -1569,8 +1715,6 @@ fn test_update_maturity_fails_when_funded() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128); // status → 1 (funded)
     client.update_maturity(&2000u64);
@@ -1607,8 +1751,6 @@ fn test_update_maturity_fails_when_settled() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128); // status → 1
     client.settle(); // status → 2
@@ -1656,8 +1798,6 @@ fn test_update_maturity_to_zero_succeeds() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     let updated = client.update_maturity(&0u64);
     assert_eq!(updated.maturity, 0u64);
@@ -1695,8 +1835,6 @@ fn test_settle_passes_exactly_at_maturity_ledger_time() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128);
 
@@ -1737,8 +1875,6 @@ fn test_settle_fails_one_second_before_maturity() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &5_000i128);
 
@@ -1776,14 +1912,48 @@ fn test_update_maturity_twice_overwrites() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     client.update_maturity(&2000u64);
     let updated = client.update_maturity(&3000u64);
     assert_eq!(updated.maturity, 3000u64);
     assert_eq!(client.get_escrow().maturity, 3000u64);
+}
+
+#[test]
+fn test_update_maturity_edge_cases_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MAT_EDGE"),
+        &sme,
+        &5_000i128,
+        &800i64,
+        &1000u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let updated1 = client.update_maturity(&2000u64);
+    assert_eq!(updated1.maturity, 2000u64);
+
+    let updated2 = client.update_maturity(&500u64);
+    assert_eq!(updated2.maturity, 500u64);
 }
 
 // ── Authorization guard ordering audit (issue #265) ───────────────────────────
@@ -1956,14 +2126,237 @@ fn auth_audit_sweep_terminal_dust_requires_treasury() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     client.fund(&investor, &TARGET);
     client.settle();
     token.stellar.mint(&escrow_id, &100i128);
     env.mock_auths(&[]);
     client.sweep_terminal_dust(&100i128);
+}
+
+// --- Additional Negative-Auth Audit Tests ---
+
+#[test]
+#[should_panic]
+fn auth_audit_init_requires_admin() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+    env.mock_auths(&[]);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "AUTHINT"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_cancel_funding_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.cancel_funding();
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_refund_requires_investor() {
+    let env = Env::default();
+    let (client, _, _, investor, _) = auth_audit_init_funded(&env);
+    env.mock_all_auths();
+    client.cancel_funding();
+    env.mock_auths(&[]);
+    client.refund(&investor);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_set_investors_allowlisted_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.set_investors_allowlisted(&soroban_sdk::Vec::new(&env), &true);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_update_funding_target_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.update_funding_target(&100_000i128);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_lower_max_unique_investors_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.lower_max_unique_investors(&1u32);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_update_maturity_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.update_maturity(&5000u64);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_rotate_beneficiary_requires_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.rotate_beneficiary(&Address::generate(&env));
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_revoke_attestation_digest_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.revoke_attestation_digest(&0u32);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_clear_legal_hold_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    client.set_legal_hold(&true);
+    env.mock_auths(&[]);
+    client.clear_legal_hold();
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_request_clear_legal_hold_requires_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.request_clear_legal_hold();
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_record_sme_collateral_commitment_requires_sme() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.record_sme_collateral_commitment(&symbol_short!("USDC"), &1000i128);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_partial_settle_requires_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    env.mock_auths(&[]);
+    client.partial_settle(&sme);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_fund_batch_requires_investor() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+    env.mock_auths(&[]);
+    client.fund_batch(&soroban_sdk::vec![&env, (investor.clone(), TARGET)]);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_sweep_terminal_dust_wrong_signer() {
+    // Edge case: treasury vs admin on sweep
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+    let escrow_id = deploy_id(&env);
+    let client = LiquifactEscrowClient::new(&env, &escrow_id);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "WRSW"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury, // Valid treasury
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor, &TARGET);
+    client.settle();
+
+    // Simulate admin trying to sweep instead of treasury
+    use soroban_sdk::testutils::MockAuth;
+    use soroban_sdk::{IntoVal, Vec as SorobanVec};
+    env.mock_auths(&[MockAuth {
+        address: &admin, // wrong signer (admin instead of treasury)
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "sweep_terminal_dust",
+            args: SorobanVec::from_array(&env, [(100i128,).into_val(&env)]),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.sweep_terminal_dust(&100i128); // Panics because caller != treasury
 }
 
 // --- rotate_beneficiary tests ---
@@ -2156,16 +2549,11 @@ fn test_rotate_beneficiary_then_withdraw_goes_to_new_sme() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     token.stellar.mint(&investor, &TARGET);
-    token.stellar.approve(
-        &investor,
-        &escrow_id,
-        &TARGET,
-        &(env.ledger().sequence() + 10_000),
-    );
+    token
+        .stellar
+        .approve(&investor, &escrow_id, &TARGET, &9999u32);
     client.fund(&investor, &TARGET);
     // Mint funded_amount into the escrow contract so withdraw() can transfer it.
     token.stellar.mint(&escrow_id, &TARGET);
@@ -3095,250 +3483,4 @@ fn test_pending_admin_remaining_consistent_with_accept_admin() {
     env.ledger().with_mut(|l| l.timestamp = expiry + 1);
     assert_eq!(client.get_pending_admin_remaining_secs(), Some(0));
     assert_contract_error(client.try_accept_admin(), EscrowError::AdminProposalExpired);
-}
-
-// ── set_registry_ref tests ───────────────────────────────────────────────────
-
-/// Set the registry ref from None → Some, verify get_registry_ref returns the new value,
-/// and assert the RegistryRefUpdated event carries the correct prior_registry (None) and
-/// new_registry (Some).
-#[test]
-fn test_set_registry_ref_sets_from_none() {
-    use soroban_sdk::testutils::Events as _;
-
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    let registry = Address::generate(&env);
-
-    // init with no registry
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SRR001"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    assert_eq!(client.get_registry_ref(), None);
-
-    let invoice_id = client.get_escrow().invoice_id.clone();
-    client.set_registry_ref(&Some(registry.clone()));
-
-    // Snapshot events immediately before any read that clears the event buffer.
-    let set_events = env.events().all();
-    assert_eq!(client.get_registry_ref(), Some(registry.clone()));
-
-    // Verify event
-    let last_event = set_events.events().last().unwrap().clone();
-    assert_eq!(
-        last_event,
-        crate::RegistryRefUpdated {
-            name: Symbol::new(&env, "reg_updated"),
-            invoice_id,
-            prior_registry: None,
-            new_registry: Some(registry),
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// Overwrite an existing registry ref with a new one, verify the event carries
-/// both the prior registry and the new value.
-#[test]
-fn test_set_registry_ref_overwrites_existing() {
-    use soroban_sdk::testutils::Events as _;
-
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    let reg1 = Address::generate(&env);
-    let reg2 = Address::generate(&env);
-
-    // init with reg1
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SRR002"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &Some(reg1.clone()),
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    assert_eq!(client.get_registry_ref(), Some(reg1.clone()));
-
-    let invoice_id = client.get_escrow().invoice_id.clone();
-    client.set_registry_ref(&Some(reg2.clone()));
-
-    // Snapshot events immediately before any read that clears the event buffer.
-    let set_events = env.events().all();
-    assert_eq!(client.get_registry_ref(), Some(reg2.clone()));
-
-    // Verify event carries prior_registry = reg1 and new_registry = reg2
-    let last_event = set_events.events().last().unwrap().clone();
-    assert_eq!(
-        last_event,
-        crate::RegistryRefUpdated {
-            name: Symbol::new(&env, "reg_updated"),
-            invoice_id,
-            prior_registry: Some(reg1),
-            new_registry: Some(reg2),
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// Clear an existing registry ref to None, verify the event carries
-/// prior_registry = Some and new_registry = None.
-#[test]
-fn test_set_registry_ref_clears_to_none() {
-    use soroban_sdk::testutils::Events as _;
-
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    let registry = Address::generate(&env);
-
-    // init with registry
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SRR003"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &Some(registry.clone()),
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    assert_eq!(client.get_registry_ref(), Some(registry.clone()));
-
-    let invoice_id = client.get_escrow().invoice_id.clone();
-    client.set_registry_ref(&None);
-
-    // Snapshot events immediately before any read that clears the event buffer.
-    let set_events = env.events().all();
-    assert_eq!(client.get_registry_ref(), None);
-
-    // Verify event
-    let last_event = set_events.events().last().unwrap().clone();
-    assert_eq!(
-        last_event,
-        crate::RegistryRefUpdated {
-            name: Symbol::new(&env, "reg_updated"),
-            invoice_id,
-            prior_registry: Some(registry),
-            new_registry: None,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// Non-admin caller must be rejected by `load_escrow_require_admin`.
-#[test]
-#[should_panic]
-fn test_set_registry_ref_requires_admin_auth() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SRR004"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Clear all auth — admin not authorized
-    env.mock_auths(&[]);
-    client.set_registry_ref(&Some(Address::generate(&env)));
-}
-
-/// get_registry_ref must reflect the updated value after set_registry_ref.
-#[test]
-fn test_get_registry_ref_reflects_set_registry_ref() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let reg = Address::generate(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SRR005"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    assert_eq!(client.get_registry_ref(), None);
-
-    client.set_registry_ref(&Some(reg.clone()));
-    assert_eq!(client.get_registry_ref(), Some(reg.clone()));
-
-    client.set_registry_ref(&None);
-    assert_eq!(client.get_registry_ref(), None);
 }

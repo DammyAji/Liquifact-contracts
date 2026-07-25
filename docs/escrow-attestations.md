@@ -27,17 +27,28 @@ independently and recompute the hash to confirm the anchor matches.
 | Property | Value |
 |---|---|
 | Auth | `InvoiceEscrow::admin` |
-| Write policy | **Single-set** — panics if already bound |
+| Write policy | **Single-set** — rejects a second bind with a typed error |
 | Storage key | `DataKey::PrimaryAttestationHash` |
 | Event | `PrimaryAttestationBound { invoice_id, digest }` |
 
 Binds the canonical compliance document digest for this escrow instance. Intended for the
 initial KYC/KYB bundle that covers the SME and the invoice at origination.
 
+**Typed error:** any bind attempt while `DataKey::PrimaryAttestationHash` is already set fails
+with `EscrowError::PrimaryAttestationAlreadyBound` (50) — regardless of whether the new digest
+matches the bound one. There is no update or replace path; a new digest requires a new escrow
+instance or the append log below.
+
 **Frontrunning note:** whichever transaction lands first wins. Observers must read on-chain
 state (or parse events) after ledger finality — there is no replay lock or commit-reveal scheme.
 In practice, the admin key is governance-controlled, so frontrunning is only a concern if the
 admin key is compromised.
+
+**Tested by** (`escrow/src/tests/attestations.rs`):
+- `test_get_primary_hash_none_before_bind` — getter default before any bind
+- `test_bind_primary_hash_same_digest_fails` / `test_bind_primary_hash_different_digest_fails` —
+  write-once holds regardless of digest value
+- `test_bind_primary_hash_non_admin_fails` — admin-gated via `mock_auths`
 
 ### `append_attestation_digest(digest: BytesN<32>)`
 
@@ -54,17 +65,29 @@ cycles, updated KYB documents, AML screening refreshes, or legal hold evidence b
 The log is an ordered sequence, not a set — duplicate digests are allowed (e.g. re-confirming
 an unchanged document at a new ledger timestamp via the event).
 
-The 33rd append panics with `"attestation append log capacity reached"`. If more than 32
-incremental anchors are needed, deploy a new escrow instance or extend the log off-chain using
-the event stream.
+**Typed error:** the 33rd append (`log.len() == MAX_ATTESTATION_APPEND_ENTRIES`) fails with
+`EscrowError::AttestationAppendLogCapacityReached` (51). If more than 32 incremental anchors
+are needed, deploy a new escrow instance or extend the log off-chain using the event stream.
 
-### `get_attestation_log_stats() -> (u32, u32)`
+**Tested by** (`escrow/src/tests/attestations.rs`):
+- `test_append_single_entry_stored` / `test_append_multiple_entries_ordered` — insertion order
+  via `get_attestation_append_log`
+- `test_append_emits_event_with_index_zero` / `test_append_event_index_increments_across_calls` —
+  `AttestationDigestAppended.index` matches the entry's position in the log
+- `test_append_exactly_max_entries_succeeds` — the 32nd entry (inclusive upper boundary) succeeds
+- `test_append_beyond_max_panics` / `test_attestation_log_stats_full_and_after_capacity_error` —
+  the 33rd entry fails, first via `#[should_panic]`, then via the typed
+  `AttestationAppendLogCapacityReached` error on `try_append_attestation_digest`
+- `test_append_non_admin_panics` — admin-gated via `mock_auths`
 
-Returns the current append-log usage and remaining capacity as `(used, remaining)`.
-This is a pure read view for integrators that want to warn before the log fills. The returned
-values satisfy `used + remaining == MAX_ATTESTATION_APPEND_ENTRIES`, and `remaining` drops to
-`0` once the log is full and the next append would fail with
-`AttestationAppendLogCapacityReached`.
+### `get_attestation_state() -> AttestationState`
+
+Read-only view exposing `primary_hash`, the full `append_log`, `append_log_len`, and
+`remaining_capacity` in one call. `append_log_len + remaining_capacity ==
+MAX_ATTESTATION_APPEND_ENTRIES` always holds, and `remaining_capacity` drops to `0` once the
+log is full and the next `append_attestation_digest` call would fail with
+`AttestationAppendLogCapacityReached`. See `test_get_attestation_state_*` in
+`escrow/src/tests/attestations.rs` for the full state-transition coverage.
 
 ### `revoke_attestation_digest(index: u32)`
 
@@ -121,7 +144,7 @@ change without notice. Stable numeric codes allow SDK consumers to branch determ
 | Atomicity | Full batch rolls back on any per-index failure |
 | Duplicate policy | **Not pre-deduplicated** — second occurrence of the same index fails with `AttestationAlreadyRevoked` (53) |
 | Storage key | `DataKey::AttestationRevoked(u32)` per index |
-| Event | One `AttestationDigestBatchRevoked { invoice_id, index }` per newly revoked index (topic `att_revb` — distinct from single-revoke `att_rev`) |
+| Event | One `AttestationDigestRevoked { invoice_id, index }` per newly revoked index |
 
 Atomically revoke multiple attestation-digest indices in a single transaction. Each index
 undergoes the same validation as the single-index `revoke_attestation_digest`:
@@ -134,7 +157,7 @@ undergoes the same validation as the single-index `revoke_attestation_digest`:
 | index already revoked | 53 | `AttestationAlreadyRevoked` |
 
 If **any** per-index validation fails, the entire batch is rolled back — no partial
-revocation occurs. Off-chain indexers can safely consume the `att_revb` event stream
+revocation occurs. Off-chain indexers can safely consume the `att_rev` event stream
 knowing that a successful batch emitted exactly one event per intended index.
 
 ```typescript
@@ -158,29 +181,6 @@ fat-finger revocation before indexers process the erroneous tombstone.
 **Guard ordering (ADR-002):** range check → revocation-state check → `require_auth` →
 storage mutation. This means range and state errors are surfaced even to unauthenticated
 callers, consistent with the existing revoke path.
-
-### `get_revoked_attestation_indices() → Vec<u32>`
-
-| Property | Value |
-|---|---|
-| Auth | None — pure read |
-| Storage keys | `DataKey::AttestationAppendLog`, `DataKey::AttestationRevoked(u32)` |
-| Mutation | None |
-| Bounded by | `MAX_ATTESTATION_APPEND_ENTRIES` (32) iterations |
-
-Returns the ordered set of indices in the append-log that have been revoked. Scans
-`0..get_attestation_append_log().len()` and collects every index `i` where
-`DataKey::AttestationRevoked(i)` is set. The result is ascending (0-based).
-
-**Use case:** auditors and indexers no longer need to probe all 32 slots individually via
-`is_attestation_revoked(i)` — this view returns the complete revoked-index set in a single
-host invocation.
-
-**Alignment:** index `i` in the result corresponds to `get_attestation_append_log().get(i)` —
-indices share the same 0-based ordering.
-
-**Legacy instances:** instances where no revocations have been recorded return an empty `Vec`
-(additive-key backward compatibility, ADR-007).
 
 The append log entry and its digest are unaffected. After a successful unrevoke,
 `is_attestation_revoked(index)` returns `false` and the entry is once again treated as
@@ -493,33 +493,5 @@ Attestation behavior is covered in [`escrow/src/tests/attestations.rs`](../escro
 | `test_batch_revoke_duplicate_index_panics` | Duplicate index in batch: second occurrence hits `AttestationAlreadyRevoked` (53), entire batch rolls back |
 | `test_batch_revoke_non_admin_panics` | Non-admin batch revoke is rejected |
 | `test_batch_revoke_preserves_log_entries` | Append log contents unchanged after batch revocation |
-| `test_batch_revoke_emits_events` | Exactly one `att_revb` event per revoked index |
+| `test_batch_revoke_emits_events` | Exactly one `att_rev` event per revoked index |
 | `test_batch_revoke_atomic_rollback` | Mid-batch failure rolls back all prior revocations |
-
-### Revoked-index enumeration (`get_revoked_attestation_indices`)
-
-| Test | What it proves |
-|---|---|
-| `test_get_revoked_attestation_indices_empty_log` | Empty log returns empty Vec |
-| `test_get_revoked_attestation_indices_none_revoked` | Non-empty log with no revocations returns empty Vec |
-| `test_get_revoked_attestation_indices_single_revoked` | Single revocation returns Vec with exactly that index |
-| `test_get_revoked_attestation_indices_some_revoked_ascending_order` | Partial revocations returned in ascending order |
-| `test_get_revoked_attestation_indices_all_revoked` | Full revocation: result length equals log length |
-| `test_get_revoked_attestation_indices_excludes_unrevoked` | Unrevoked index no longer appears after `unrevoke_attestation_digest` |
-| `test_get_revoked_attestation_indices_align_with_log_order` | Index `i` in result aligns with `get_attestation_append_log().get(i)` |
-| `test_get_revoked_attestation_indices_bounded_by_max_entries` | Full log with alternating revocations — result bounded and correct |
-| `test_get_revoked_attestation_indices_no_auth_required` | Pure read — succeeds with no auth mocks |
-
-### Revoked-index enumeration (`get_revoked_attestation_indices`)
-
-| Test | What it proves |
-|---|---|
-| `test_get_revoked_attestation_indices_empty_log` | Empty log returns empty Vec |
-| `test_get_revoked_attestation_indices_none_revoked` | Non-empty log with no revocations returns empty Vec |
-| `test_get_revoked_attestation_indices_single_revoked` | Single revocation returns Vec with exactly that index |
-| `test_get_revoked_attestation_indices_some_revoked_ascending_order` | Partial revocations returned in ascending order |
-| `test_get_revoked_attestation_indices_all_revoked` | Full revocation: result length equals log length |
-| `test_get_revoked_attestation_indices_excludes_unrevoked` | Unrevoked index no longer appears after `unrevoke_attestation_digest` |
-| `test_get_revoked_attestation_indices_align_with_log_order` | Index `i` in result aligns with `get_attestation_append_log().get(i)` |
-| `test_get_revoked_attestation_indices_bounded_by_max_entries` | Full log with alternating revocations — result bounded and correct |
-| `test_get_revoked_attestation_indices_no_auth_required` | Pure read — succeeds with no auth mocks |
