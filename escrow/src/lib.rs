@@ -647,6 +647,29 @@ pub(crate) fn require_funding_open(env: &Env, status: u32) {
 /// check or pick the wrong `LegalHoldBlocks*` variant — the caller passes the typed error
 /// variant that documents which entrypoint was blocked.
 ///
+/// Operational pause guard: asserts that the operational pause ([`DataKey::Paused`]) is not active.
+///
+/// Replaces the repeated inline pattern `ensure(&env, !Self::paused_active(&env), EscrowError::PausedBlocks*)`
+/// that previously appeared at risk-bearing entrypoints — `fund_impl`, `settle`, `withdraw`, and
+/// `claim_investor_payout`.
+///
+/// # Errors
+/// Panics with the caller-supplied `error` (one of the `EscrowError::PausedBlocks*`
+/// variants) when [`DataKey::Paused`] is `true`.
+///
+/// # Security notes
+/// - Read-only: performs a single instance-storage read with `unwrap_or(false)` (no panic on
+///   missing key). Does not write or delete any storage key.
+/// - This helper is **not** an authorization check. Callers must still call
+///   `Address::require_auth()` for the entrypoint's bound role before any storage mutation
+///   or token transfer, per [ADR-002](docs/adr/ADR-002-auth-boundaries.md).
+/// - The `Paused` flag is independent of the compliance legal hold ([`DataKey::LegalHold`]); an
+///   entrypoint that needs both gates must compose `guard_not_paused` with `guard_not_legal_hold`.
+#[inline(always)]
+pub(crate) fn guard_not_paused(env: &Env, error: EscrowError) {
+    ensure(env, !LiquifactEscrow::paused_active(env), error);
+}
+
 /// # Errors
 /// Panics with the caller-supplied `error` (one of the `EscrowError::LegalHoldBlocks*`
 /// variants) when [`DataKey::LegalHold`] is `true`.
@@ -659,7 +682,7 @@ pub(crate) fn require_funding_open(env: &Env, status: u32) {
 ///   or token transfer, per [ADR-002](docs/adr/ADR-002-auth-boundaries.md).
 /// - The `LegalHold` flag is independent of the operational pause ([`DataKey::Paused`]); an
 ///   entrypoint that needs both gates must compose `guard_not_legal_hold` with
-///   `ensure(!paused_active(env), PausedBlocks*)` itself.
+///   `guard_not_paused(env, PausedBlocks*)` itself.
 #[inline(always)]
 pub(crate) fn guard_not_legal_hold(env: &Env, error: EscrowError) {
     ensure(env, !LiquifactEscrow::legal_hold_active(env), error);
@@ -4028,11 +4051,7 @@ impl LiquifactEscrow {
         // env.clone(): env is used again after this call for storage writes and publish.
         let mut escrow = Self::get_escrow(env.clone());
         // Operational pause gate (read-only), independent of the compliance legal hold below.
-        ensure(
-            &env,
-            !Self::paused_active(&env),
-            EscrowError::PausedBlocksFunding,
-        );
+        guard_not_paused(&env, EscrowError::PausedBlocksFunding);
         // Legal hold check is intentionally after the escrow read: the escrow is needed for
         // status and yield_bps regardless, and hoisting the hold check before the escrow read
         // would not reduce storage operations (both keys are always read on this path).
@@ -4278,11 +4297,7 @@ impl LiquifactEscrow {
 
     pub fn settle(env: Env) -> InvoiceEscrow {
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
-        ensure(
-            &env,
-            !Self::paused_active(&env),
-            EscrowError::PausedBlocksSettlement,
-        );
+        guard_not_paused(&env, EscrowError::PausedBlocksSettlement);
         guard_not_legal_hold(&env, EscrowError::LegalHoldBlocksSettlement);
 
         // env.clone(): env is used again after this call for ledger timestamp, storage set, and publish.
@@ -4370,11 +4385,7 @@ impl LiquifactEscrow {
     /// - [`EscrowError::WithdrawNetArithmeticUnderflow`] — `funded_amount - fee` underflowed (unreachable for in-range `fee_bps`).
     pub fn withdraw(env: Env) -> InvoiceEscrow {
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
-        ensure(
-            &env,
-            !Self::paused_active(&env),
-            EscrowError::PausedBlocksWithdrawal,
-        );
+        guard_not_paused(&env, EscrowError::PausedBlocksWithdrawal);
         guard_not_legal_hold(&env, EscrowError::LegalHoldBlocksWithdrawal);
 
         let mut escrow = Self::load_escrow_require_sme(&env);
@@ -4500,11 +4511,7 @@ impl LiquifactEscrow {
     /// or an unexpired commitment lock.
     pub fn claim_investor_payout(env: Env, investor: Address) {
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
-        ensure(
-            &env,
-            !Self::paused_active(&env),
-            EscrowError::PausedBlocksInvestorClaims,
-        );
+        guard_not_paused(&env, EscrowError::PausedBlocksInvestorClaims);
         guard_not_legal_hold(&env, EscrowError::LegalHoldBlocksInvestorClaims);
 
         investor.require_auth();
