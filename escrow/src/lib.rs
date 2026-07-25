@@ -2339,16 +2339,6 @@ impl LiquifactEscrow {
         }
         .publish(&env);
 
-        if protocol_fee_bps > 0 {
-            ProtocolFeeBpsLowered {
-                name: symbol_short!("fee_lo"),
-                invoice_id: escrow.invoice_id.clone(),
-                old_bps: 0,
-                new_bps: protocol_fee_bps,
-            }
-            .publish(&env);
-        }
-
         escrow
     }
 
@@ -4348,43 +4338,35 @@ impl LiquifactEscrow {
         let end = (start + actual_limit).min(len);
 
         // Load yield tier table once (if configured)
-        let tier_table: Option<Vec<YieldTier>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldTierTable);
+        let tier_table: Option<Vec<YieldTier>> =
+            env.storage().instance().get(&DataKey::YieldTierTable);
 
         // Load base yield once
         let escrow: InvoiceEscrow = env
             .storage()
             .instance()
             .get(&DataKey::Escrow)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, EscrowError::EscrowNotInitialized)
-            });
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::EscrowNotInitialized));
         let base_yield = escrow.yield_bps;
 
         let mut result = Vec::new(&env);
         for i in start..end {
             let addr = index.get(i).unwrap();
-            
+
             // Only include if still actively allowlisted
             let is_al: bool = env
                 .storage()
                 .persistent()
                 .get(&DataKey::InvestorAllowlisted(addr.clone()))
                 .unwrap_or(false);
-            
+
             if !is_al {
                 continue;
             }
 
             // Determine tier index based on effective yield
-            let tier_index = Self::get_tier_index_for_investor(
-                &env,
-                &addr,
-                base_yield,
-                &tier_table,
-            );
+            let tier_index =
+                Self::get_tier_index_for_investor(&env, &addr, base_yield, &tier_table);
 
             result.push_back(AllowlistEntry {
                 investor: addr,
@@ -4570,7 +4552,10 @@ impl LiquifactEscrow {
                 closed_at_ledger_sequence: snap.closed_at_ledger_sequence,
             }
             .publish(&env);
-        }
+            true
+        } else {
+            false
+        };
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
@@ -6745,8 +6730,7 @@ impl LiquifactEscrow {
         }
 
         // 5. Contribution read and over-withdrawal guard (checked arithmetic)
-        let contribution: i128 =
-            Self::get_persistent_investor_contribution(&env, investor.clone());
+        let contribution: i128 = Self::get_persistent_investor_contribution(&env, investor.clone());
         let remaining_contribution = contribution
             .checked_sub(amount)
             .unwrap_or_else(|| fail(&env, EscrowError::OverWithdrawal));
