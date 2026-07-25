@@ -7607,3 +7607,326 @@ fn test_unfund_event_emitted() {
 
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
+
+
+// ─── get_funding_records paginated view tests (issue #790) ─────────────────────
+
+#[test]
+fn test_get_funding_records_empty() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // No funding records exist yet
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 0, "empty result when no records exist");
+}
+
+#[test]
+fn test_get_funding_records_single_page() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 3 investors with different amounts
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    client.fund(&inv_a, &1_000i128);
+    client.fund(&inv_b, &2_000i128);
+    client.fund(&inv_c, &3_000i128);
+
+    // All fit in one page (limit=50 > 3 records)
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 3, "single page should return all 3 records");
+
+    // Verify each record
+    let rec_a = records.get(0).unwrap();
+    assert_eq!(rec_a.0, inv_a);
+    assert_eq!(rec_a.1, 1_000i128);
+
+    let rec_b = records.get(1).unwrap();
+    assert_eq!(rec_b.0, inv_b);
+    assert_eq!(rec_b.1, 2_000i128);
+
+    let rec_c = records.get(2).unwrap();
+    assert_eq!(rec_c.0, inv_c);
+    assert_eq!(rec_c.1, 3_000i128);
+}
+
+#[test]
+fn test_get_funding_records_continuation() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 5 investors
+    let mut investors = std::vec::Vec::new();
+    let mut amounts = std::vec::Vec::new();
+
+    for i in 0..5 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) * 1_000i128;
+        investors.push(inv.clone());
+        amounts.push(amount);
+        client.fund(&inv, &amount);
+    }
+
+    // Page 1: start=0, limit=2
+    let page1 = client.get_funding_records(&0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().0, investors[0]);
+    assert_eq!(page1.get(0).unwrap().1, amounts[0]);
+    assert_eq!(page1.get(1).unwrap().0, investors[1]);
+    assert_eq!(page1.get(1).unwrap().1, amounts[1]);
+
+    // Page 2: start=2, limit=2
+    let page2 = client.get_funding_records(&2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().0, investors[2]);
+    assert_eq!(page2.get(0).unwrap().1, amounts[2]);
+    assert_eq!(page2.get(1).unwrap().0, investors[3]);
+    assert_eq!(page2.get(1).unwrap().1, amounts[3]);
+
+    // Page 3: start=4, limit=2 (only 1 left)
+    let page3 = client.get_funding_records(&4, &2);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().0, investors[4]);
+    assert_eq!(page3.get(0).unwrap().1, amounts[4]);
+
+    // Verify all records are accounted for with no duplicates
+    let all_paginated = std::vec::Vec::from([page1, page2, page3].into_iter().flatten().collect::<Vec<_>>());
+    assert_eq!(all_paginated.len(), 5, "pagination should return all records exactly once");
+}
+
+#[test]
+fn test_get_funding_records_ceiling_clamp() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 52 investors to exceed the page ceiling (MAX_INVESTOR_READ_BATCH = 50)
+    let mut investor_amounts = std::vec::Vec::new();
+    for i in 0..52 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) as i128 * 1_000i128;
+        investor_amounts.push((inv.clone(), amount));
+        client.fund(&inv, &amount);
+    }
+
+    // Request limit of 100 (exceeds ceiling of 50)
+    let page = client.get_funding_records(&0, &100);
+    assert_eq!(
+        page.len(),
+        50,
+        "result should be clamped to MAX_INVESTOR_READ_BATCH (50), not the requested 100"
+    );
+
+    // Request limit of 75 (exceeds ceiling of 50)
+    let page = client.get_funding_records(&0, &75);
+    assert_eq!(
+        page.len(),
+        50,
+        "result should be clamped to ceiling even when requesting 75"
+    );
+
+    // Get the second page to verify continuation works after clamp
+    let page2 = client.get_funding_records(&50, &100);
+    assert_eq!(
+        page2.len(),
+        2,
+        "remaining 2 records should be in second page"
+    );
+}
+
+#[test]
+fn test_get_funding_records_boundary_at_count() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 5 investors
+    for _ in 0..5 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // start = count (5), should return empty
+    let records = client.get_funding_records(&5, &50);
+    assert_eq!(
+        records.len(),
+        0,
+        "start at boundary (== count) should return empty"
+    );
+}
+
+#[test]
+fn test_get_funding_records_boundary_beyond_count() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 5 investors
+    for _ in 0..5 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // start > count, should return empty
+    let records = client.get_funding_records(&10, &50);
+    assert_eq!(
+        records.len(),
+        0,
+        "start beyond boundary (> count) should return empty"
+    );
+}
+
+#[test]
+fn test_get_funding_records_zero_limit() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add some funding
+    for _ in 0..3 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // limit=0 should return empty (no records requested)
+    let records = client.get_funding_records(&0, &0);
+    assert_eq!(records.len(), 0, "limit=0 should return empty result");
+}
+
+#[test]
+fn test_get_funding_records_multiple_contributions_per_investor() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Single investor makes multiple deposits
+    let inv = Address::generate(&env);
+    client.fund(&inv, &1_000i128);
+    client.fund(&inv, &2_000i128);
+    client.fund(&inv, &3_000i128);
+
+    // Should appear exactly once in the index with the cumulative contribution
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 1, "investor should appear once even with multiple deposits");
+
+    let record = records.get(0).unwrap();
+    assert_eq!(record.0, inv);
+    assert_eq!(
+        record.1, 6_000i128,
+        "contribution should be sum of all deposits"
+    );
+}
+
+#[test]
+fn test_get_funding_records_preserves_order() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add investors in a specific order
+    let mut investors = std::vec::Vec::new();
+    for _ in 0..10 {
+        let inv = Address::generate(&env);
+        investors.push(inv.clone());
+        client.fund(&inv, &1_000i128);
+    }
+
+    // Paginate through with limit=3 each to reconstruct full order
+    let mut all_records = std::vec::Vec::new();
+    let mut start = 0;
+    loop {
+        let page = client.get_funding_records(&start, &3);
+        if page.is_empty() {
+            break;
+        }
+        for rec in &page {
+            all_records.push(rec.clone());
+        }
+        start += page.len() as u32;
+    }
+
+    // Verify the order matches the insertion order
+    assert_eq!(all_records.len(), 10, "should retrieve all 10 records");
+    for (i, rec) in all_records.iter().enumerate() {
+        assert_eq!(rec.0, investors[i], "records should be in insertion order");
+    }
+}
+
+#[test]
+fn test_get_funding_records_empty_then_funded() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Initially no records
+    let records_before = client.get_funding_records(&0, &50);
+    assert_eq!(records_before.len(), 0);
+
+    // Add some funding
+    let inv = Address::generate(&env);
+    client.fund(&inv, &1_000i128);
+
+    // Now records should appear
+    let records_after = client.get_funding_records(&0, &50);
+    assert_eq!(records_after.len(), 1);
+    assert_eq!(records_after.get(0).unwrap().0, inv);
+    assert_eq!(records_after.get(0).unwrap().1, 1_000i128);
+}
+
+#[test]
+fn test_get_funding_records_full_iteration() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Add 123 investors to exercise full multi-page iteration
+    // (123 / 50 ceiling = 3 pages)
+    let mut investors = std::vec::Vec::new();
+    let mut amounts = std::vec::Vec::new();
+
+    for i in 0..123 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) as i128 * 100i128;
+        investors.push(inv.clone());
+        amounts.push(amount);
+        client.fund(&inv, &amount);
+    }
+
+    // Paginate through all records
+    let mut collected = std::vec::Vec::new();
+    let mut start = 0;
+
+    loop {
+        let page = client.get_funding_records(&start, &50);
+        if page.is_empty() {
+            break;
+        }
+        for rec in &page {
+            collected.push(rec.clone());
+        }
+        start += page.len() as u32;
+    }
+
+    // Verify we got all records
+    assert_eq!(
+        collected.len(),
+        123,
+        "full iteration should return all 123 records"
+    );
+
+    // Spot-check some records
+    assert_eq!(collected.get(0).unwrap().0, investors[0]);
+    assert_eq!(collected.get(0).unwrap().1, amounts[0]);
+    assert_eq!(collected.get(49).unwrap().0, investors[49]);
+    assert_eq!(collected.get(49).unwrap().1, amounts[49]);
+    assert_eq!(collected.get(50).unwrap().0, investors[50]);
+    assert_eq!(collected.get(50).unwrap().1, amounts[50]);
+    assert_eq!(collected.get(122).unwrap().0, investors[122]);
+    assert_eq!(collected.get(122).unwrap().1, amounts[122]);
+}
