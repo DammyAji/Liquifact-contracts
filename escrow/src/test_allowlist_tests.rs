@@ -1210,29 +1210,29 @@ fn test_batch_revoke_emits_batch_event() {
     // Clear events from the first batch call.
     let _ = env.events().all();
 
-    // Now revoke.
-    client.set_investors_allowlisted(&batch, &false);
-
-    let binding = env.events().all();
-    let events = binding.events();
-
-    let al_set_a = InvestorAllowlistChanged {
-        name: symbol_short!("al_set"),
-        invoice_id: invoice_id.clone(),
-        investor: a,
-        allowed: 0,
-    }
-    .to_xdr(&env, &contract_id);
-    let al_set_b = InvestorAllowlistChanged {
-        name: symbol_short!("al_set"),
-        invoice_id: invoice_id.clone(),
-        investor: b,
-        allowed: 0,
-    }
-    .to_xdr(&env, &contract_id);
-    assert!(
-        events.iter().any(|e| *e == al_set_a),
-        "must emit al_set for a"
+    // --- batch path (new contract, same invoice id) ---
+    let client2 = deploy(&env);
+    let admin2 = Address::generate(&env);
+    let sme2 = Address::generate(&env);
+    let token2 = Address::generate(&env);
+    let treasury2 = Address::generate(&env);
+    client2.init(
+        &admin2,
+        &soroban_sdk::String::from_str(&env, "ALINV001"),
+        &sme2,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &token2,
+        &None,
+        &treasury2,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
     );
     assert!(
         events.iter().any(|e| *e == al_set_b),

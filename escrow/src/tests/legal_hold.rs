@@ -52,8 +52,6 @@ fn init_open(
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     (token, treasury)
 }
@@ -124,9 +122,9 @@ fn init_funded_with_real_token<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
+    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
+    // that transfer is what actually moves TARGET tokens into the escrow contract.
     sac_admin.mint(investor, &TARGET);
     client.fund(investor, &TARGET);
     (client, escrow_id)
@@ -176,11 +174,8 @@ fn init_settled<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
-    let sac_admin = StellarAssetClient::new(env, &token);
-    sac_admin.mint(investor, &TARGET);
+    StellarAssetClient::new(env, &token).mint(investor, &TARGET);
     client.fund(investor, &TARGET);
     client.settle();
     (client, escrow_id, token, treasury)
@@ -721,8 +716,9 @@ fn non_risk_operations_not_blocked_by_hold() {
     assert!(client.get_legal_hold());
 
     // `update_maturity` must not be blocked.
-    let updated = client.update_maturity(&9999u64);
-    assert_eq!(updated.maturity, 9999u64);
+    let new_maturity = env.ledger().timestamp() + 9999u64;
+    let updated = client.update_maturity(&new_maturity);
+    assert_eq!(updated.maturity, new_maturity);
 
     // Two-step admin handover must not be blocked.
     let new_admin = Address::generate(&env);
@@ -965,14 +961,13 @@ fn recovery_new_admin_clears_hold_and_operations_resume() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
+    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
+    // that transfer moves TARGET tokens into the escrow contract. Mint an extra TARGET
+    // directly into the contract so it can also cover the settlement coupon (yield_bps).
     sac_admin.mint(&investor, &TARGET);
     client.fund(&investor, &TARGET);
-    // Mint yield portion so claim_investor_payout can transfer principal + yield.
-    let yield_amount = TARGET * 800 / 10_000;
-    sac_admin.mint(&escrow_id, &yield_amount);
+    sac_admin.mint(&escrow_id, &TARGET);
 
     // --- Step 1: activate hold — settle is now blocked. ---
     client.set_legal_hold(&true);

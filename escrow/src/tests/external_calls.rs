@@ -231,7 +231,7 @@ fn setup_cancelled_with_token<'a>(
         &None,
         &None::<i64>,
     );
-    // Mint to investor so fund() can transfer principal into escrow
+    // Mint tokens to the investor so `fund`'s inbound transfer has a balance to pull from.
     token.stellar.mint(investor, &fund_amount);
     client.fund(investor, &fund_amount);
     client.cancel_funding();
@@ -315,8 +315,11 @@ fn sweep_liability_floor_allows_sweep_of_excess_above_outstanding() {
         &None::<i64>,
     );
 
-    // Mint 1001 into contract: 500 for A, 500 for B, 1 dust
-    token.stellar.mint(&investor_a, &1_001i128);
+    // Mint 500 to each investor (their own balance, pulled by `fund`'s inbound transfer),
+    // plus 1 unit of dust directly into the contract.
+    token.stellar.mint(&investor_a, &500i128);
+    token.stellar.mint(&investor_b, &500i128);
+    token.stellar.mint(&client.address, &1i128);
     client.fund(&investor_a, &500i128);
     client.fund(&investor_b, &500i128);
     client.cancel_funding();
@@ -449,7 +452,9 @@ fn distributed_principal_accumulates_across_multiple_refunds() {
         &None::<i64>,
     );
 
-    token.stellar.mint(&inv_a, &900i128);
+    token.stellar.mint(&inv_a, &300i128);
+    token.stellar.mint(&inv_b, &300i128);
+    token.stellar.mint(&inv_c, &300i128);
     client.fund(&inv_a, &300i128);
     client.fund(&inv_b, &300i128);
     client.fund(&inv_c, &300i128);

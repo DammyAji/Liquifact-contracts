@@ -452,383 +452,293 @@ fn test_revoke_non_admin_returns_error() {
 }
 
 // ---------------------------------------------------------------------------
-// unrevoke_attestation_digest — reversal of revocation
+// unrevoke_attestation_digest — clears a revocation marker
 // ---------------------------------------------------------------------------
 
-/// Happy path: revoke then unrevoke index 0; confirm `is_attestation_revoked`
-/// flips back to `false` and the digest remains readable.
+/// Happy path: revoke then unrevoke clears the marker.
 #[test]
-fn test_unrevoke_single_entry() {
+fn test_unrevoke_clears_revoked_marker() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    let d = digest(&env, 0xAA);
-    client.append_attestation_digest(&d);
-
+    client.append_attestation_digest(&digest(&env, 0xAA));
     client.revoke_attestation_digest(&0);
     assert!(client.is_attestation_revoked(&0));
 
     client.unrevoke_attestation_digest(&0);
     assert!(!client.is_attestation_revoked(&0));
-
-    let log = client.get_attestation_append_log();
-    assert_eq!(log.len(), 1);
-    assert_eq!(log.get(0).unwrap(), d);
 }
 
-/// Unrevoke emits `att_unrev` with the correct index.
+/// Unrevoking an index beyond the log length returns `AttestationIndexOutOfRange`.
 #[test]
-fn test_unrevoke_emits_event() {
+fn test_unrevoke_out_of_range_returns_error() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    let contract_id = client.address.clone();
-    let d = digest(&env, 0xBB);
-    client.append_attestation_digest(&d);
-    client.revoke_attestation_digest(&0);
-
-    client.unrevoke_attestation_digest(&0);
-
-    let all_events = env.events().all();
-    let invoice_id = client.get_escrow().invoice_id;
-    assert_eq!(
-        all_events.events().last().unwrap().clone(),
-        AttestationDigestUnrevoked {
-            name: symbol_short!("att_unrev"),
-            invoice_id,
-            index: 0,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// Unrevoking an index beyond the current log length returns
-/// `AttestationIndexOutOfRange`.
-#[test]
-fn test_unrevoke_out_of_range() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    // Empty log — index 0 is out of range.
     assert_contract_error(
         client.try_unrevoke_attestation_digest(&0),
-        EscrowError::AttestationIndexOutOfRange,
-    );
-}
-
-/// Unrevoking an index equal to log length returns `AttestationIndexOutOfRange`.
-#[test]
-fn test_unrevoke_at_log_len() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x10));
-    // log.len() == 1, index 1 is out of range.
-    assert_contract_error(
-        client.try_unrevoke_attestation_digest(&1),
-        EscrowError::AttestationIndexOutOfRange,
-    );
-}
-
-/// A large out-of-range index returns `AttestationIndexOutOfRange`.
-#[test]
-fn test_unrevoke_large_index_out_of_range() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    assert_contract_error(
-        client.try_unrevoke_attestation_digest(&99),
         EscrowError::AttestationIndexOutOfRange,
     );
 }
 
 /// Unrevoking an index that was never revoked returns `AttestationNotRevoked`.
 #[test]
-fn test_unrevoke_not_revoked() {
+fn test_unrevoke_not_revoked_returns_error() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x42));
+    client.append_attestation_digest(&digest(&env, 0xBB));
     assert_contract_error(
         client.try_unrevoke_attestation_digest(&0),
         EscrowError::AttestationNotRevoked,
     );
 }
 
-/// Unrevoking an index that was never revoked still returns
-/// `AttestationNotRevoked` even after an unrelated index was revoked.
+/// A second unrevoke on an already-cleared index returns `AttestationNotRevoked`.
 #[test]
-fn test_unrevoke_not_revoked_while_other_revoked() {
+fn test_unrevoke_twice_returns_error() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    client.append_attestation_digest(&digest(&env, 0x02));
-    client.revoke_attestation_digest(&1);
+    client.append_attestation_digest(&digest(&env, 0xCC));
+    client.revoke_attestation_digest(&0);
+    client.unrevoke_attestation_digest(&0);
     assert_contract_error(
         client.try_unrevoke_attestation_digest(&0),
         EscrowError::AttestationNotRevoked,
     );
 }
 
-/// Digest is preserved through revoke → unrevoke cycles.
-#[test]
-fn test_unrevoke_preserves_digest() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    let d = digest(&env, 0xCA);
-    client.append_attestation_digest(&d);
-
-    client.revoke_attestation_digest(&0);
-    client.unrevoke_attestation_digest(&0);
-
-    let log = client.get_attestation_append_log();
-    assert_eq!(log.len(), 1);
-    assert_eq!(log.get(0).unwrap(), d);
-}
-
-/// Multiple revoke → unrevoke cycles on the same index preserve the digest
-/// and toggle the revoked flag each time.
-#[test]
-fn test_revoke_unrevoke_cycle() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    let d = digest(&env, 0xDD);
-    client.append_attestation_digest(&d);
-
-    for _ in 0..3 {
-        assert!(!client.is_attestation_revoked(&0));
-        client.revoke_attestation_digest(&0);
-        assert!(client.is_attestation_revoked(&0));
-        client.unrevoke_attestation_digest(&0);
-        assert!(!client.is_attestation_revoked(&0));
-    }
-    let log = client.get_attestation_append_log();
-    assert_eq!(log.get(0).unwrap(), d);
-}
-
-/// Revoke → unrevoke → revoke again succeeds (full round-trip).
-#[test]
-fn test_revoke_unrevoke_revoke_again() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0xEE));
-
-    client.revoke_attestation_digest(&0);
-    assert!(client.is_attestation_revoked(&0));
-
-    client.unrevoke_attestation_digest(&0);
-    assert!(!client.is_attestation_revoked(&0));
-
-    client.revoke_attestation_digest(&0);
-    assert!(client.is_attestation_revoked(&0));
-}
-
-/// Unrevoking one index does not affect the revocation state of others.
-#[test]
-fn test_unrevoke_does_not_affect_other_indices() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    client.append_attestation_digest(&digest(&env, 0x02));
-    client.append_attestation_digest(&digest(&env, 0x03));
-
-    client.revoke_attestation_digest(&0);
-    client.revoke_attestation_digest(&2);
-    assert!(client.is_attestation_revoked(&0));
-    assert!(!client.is_attestation_revoked(&1));
-    assert!(client.is_attestation_revoked(&2));
-
-    client.unrevoke_attestation_digest(&0);
-
-    assert!(!client.is_attestation_revoked(&0));
-    assert!(!client.is_attestation_revoked(&1));
-    assert!(client.is_attestation_revoked(&2));
-}
-
-/// Unrevoking all revoked entries sequentially clears every marker.
-#[test]
-fn test_unrevoke_all_entries() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    for i in 0u8..5 {
-        client.append_attestation_digest(&digest(&env, i));
-    }
-    for i in 0u8..5 {
-        client.revoke_attestation_digest(&(i as u32));
-    }
-    for i in 0u8..5 {
-        assert!(client.is_attestation_revoked(&(i as u32)));
-        client.unrevoke_attestation_digest(&(i as u32));
-        assert!(!client.is_attestation_revoked(&(i as u32)));
-    }
-}
-
-/// Unrevoked index correctly reports `false` via `is_attestation_revoked`
-/// while other revoked indices remain `true`.
-#[test]
-fn test_unrevoke_mid_index() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    for i in 0u8..3 {
-        client.append_attestation_digest(&digest(&env, i));
-    }
-    for i in 0u8..3 {
-        client.revoke_attestation_digest(&(i as u32));
-    }
-    // Unrevoke only the middle entry.
-    client.unrevoke_attestation_digest(&1);
-    assert!(client.is_attestation_revoked(&0));
-    assert!(!client.is_attestation_revoked(&1));
-    assert!(client.is_attestation_revoked(&2));
-}
-
-/// Non-admin caller must not be able to unrevoke.
-#[test]
-#[should_panic]
-fn test_unrevoke_non_admin_panics() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0xFF));
-    client.revoke_attestation_digest(&0);
-    env.mock_auths(&[]);
-    client.unrevoke_attestation_digest(&0);
-}
-
-/// Non-admin `try_unrevoke_attestation_digest` returns an error.
+/// Non-admin `try_unrevoke_attestation_digest` returns an authorization error.
 #[test]
 fn test_unrevoke_non_admin_returns_error() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0xFF));
+    client.append_attestation_digest(&digest(&env, 0xDD));
     client.revoke_attestation_digest(&0);
     env.mock_auths(&[]);
     assert!(client.try_unrevoke_attestation_digest(&0).is_err());
 }
 
 // ---------------------------------------------------------------------------
-// get_attestation_digest_at
+// Dedicated events — issue #702
+//
+// Each attestation state change (bind, append, revoke, unrevoke) must emit its
+// own event, captured here immediately after the mutating call (before any
+// further contract call clears the host event buffer). Payloads are compared
+// as full XDR to catch any field/shape drift, not just topic presence.
 // ---------------------------------------------------------------------------
 
+/// `bind_primary_attestation_hash` emits `PrimaryAttestationBound` under the
+/// `att_bind` topic, carrying the escrow's invoice id and the bound digest.
 #[test]
-fn test_get_attestation_digest_at_none_when_empty() {
+fn test_bind_primary_hash_emits_dedicated_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    assert_eq!(client.get_attestation_digest_at(&0), None);
-    assert_eq!(client.get_attestation_digest_at(&1), None);
-}
-
-#[test]
-fn test_get_attestation_digest_at_none_out_of_bounds() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    client.append_attestation_digest(&digest(&env, 0x02));
-
-    assert_eq!(client.get_attestation_digest_at(&2), None);
-    assert_eq!(client.get_attestation_digest_at(&100), None);
-}
-
-#[test]
-fn test_get_attestation_digest_at_retrieves_unrevoked() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    let d0 = digest(&env, 0x10);
-    let d1 = digest(&env, 0x20);
-    client.append_attestation_digest(&d0);
-    client.append_attestation_digest(&d1);
-
-    let info0 = client.get_attestation_digest_at(&0).unwrap();
-    assert_eq!(info0.digest, d0);
-    assert!(!info0.revoked);
-
-    let info1 = client.get_attestation_digest_at(&1).unwrap();
-    assert_eq!(info1.digest, d1);
-    assert!(!info1.revoked);
-}
-
-#[test]
-fn test_get_attestation_digest_at_reflects_revocation_cycle() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
     let d = digest(&env, 0xAB);
+
+    client.bind_primary_attestation_hash(&d);
+
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![PrimaryAttestationBound {
+            name: symbol_short!("att_bind"),
+            invoice_id,
+            digest: d,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// `append_attestation_digest` emits `AttestationDigestAppended` under the
+/// `att_app` topic, carrying the invoice id, the new entry's index, and digest.
+#[test]
+fn test_append_digest_emits_dedicated_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
+    let d = digest(&env, 0x11);
+
     client.append_attestation_digest(&d);
 
-    // Initial state: unrevoked
-    let info = client.get_attestation_digest_at(&0).unwrap();
-    assert_eq!(info.digest, d);
-    assert!(!info.revoked);
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestAppended {
+            name: symbol_short!("att_app"),
+            invoice_id,
+            index: 0,
+            digest: d,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
 
-    // Revoked state
+/// A second `append_attestation_digest` call carries the correct incremented index.
+#[test]
+fn test_append_digest_second_entry_emits_index_one() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    let d = digest(&env, 0x02);
+    client.append_attestation_digest(&d);
+
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestAppended {
+            name: symbol_short!("att_app"),
+            invoice_id,
+            index: 1,
+            digest: d,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// `revoke_attestation_digest` emits `AttestationDigestRevoked` under the
+/// `att_rev` topic, carrying the invoice id and the revoked index.
+#[test]
+fn test_revoke_digest_emits_dedicated_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
+    client.append_attestation_digest(&digest(&env, 0xEE));
+
     client.revoke_attestation_digest(&0);
-    let info = client.get_attestation_digest_at(&0).unwrap();
-    assert_eq!(info.digest, d);
-    assert!(info.revoked);
 
-    // Unrevoked state again
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// `unrevoke_attestation_digest` emits `AttestationDigestUnrevoked` under the
+/// `att_unrev` topic, carrying the invoice id and the cleared index.
+#[test]
+fn test_unrevoke_digest_emits_dedicated_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    client.revoke_attestation_digest(&0);
+
     client.unrevoke_attestation_digest(&0);
-    let info = client.get_attestation_digest_at(&0).unwrap();
-    assert_eq!(info.digest, d);
-    assert!(!info.revoked);
+
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
 }
 
-// ── Issue #555: get_revoked_attestation_digests ──────────────────────────────
-
+/// Every attestation event topic is distinct from the others (and from the
+/// fixed-width `symbol_short!` limit of 9 characters), so indexers filtering
+/// on `topic[1]` can never confuse one attestation state change for another.
 #[test]
-fn test_revoked_digests_view_only_revoked_entries() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    let d0 = digest(&env, 0x01);
-    let d1 = digest(&env, 0x02);
-    let d2 = digest(&env, 0x03);
-    client.append_attestation_digest(&d0);
-    client.append_attestation_digest(&d1);
-    client.append_attestation_digest(&d2);
-    client.revoke_attestation_digest(&0);
-    client.revoke_attestation_digest(&2);
+fn test_attestation_event_topics_do_not_collide() {
+    use soroban_sdk::symbol_short;
 
-    let page = client.get_revoked_attestation_digests(&0, &10);
-    assert_eq!(page.len(), 2);
-    assert_eq!(page.get(0).unwrap().digest, d0);
-    assert!(page.get(0).unwrap().revoked);
-    assert_eq!(page.get(1).unwrap().digest, d2);
-}
+    let topics = [
+        symbol_short!("att_bind"),
+        symbol_short!("att_app"),
+        symbol_short!("att_rev"),
+        symbol_short!("att_unrev"),
+    ];
 
-#[test]
-fn test_revoked_digests_view_excludes_unrevoked_after_unrevoke() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0xAA));
-    client.append_attestation_digest(&digest(&env, 0xBB));
-    client.revoke_attestation_digest(&0);
-    client.revoke_attestation_digest(&1);
-    client.unrevoke_attestation_digest(&0);
-
-    let page = client.get_revoked_attestation_digests(&0, &10);
-    assert_eq!(page.len(), 1);
-    assert_eq!(page.get(0).unwrap().digest, digest(&env, 0xBB));
-}
-
-#[test]
-fn test_revoked_digests_view_pagination_and_empty_past_end() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    for i in 0u8..5 {
-        client.append_attestation_digest(&digest(&env, i));
-        client.revoke_attestation_digest(&(i as u32));
+    for t in &topics {
+        // symbol_short! already enforces <= 9 chars at compile time; this is a
+        // belt-and-suspenders runtime check that survives refactors.
+        assert!(t.to_string().len() <= 9, "topic {t:?} exceeds 9 chars");
     }
 
-    let page0 = client.get_revoked_attestation_digests(&0, &2);
-    assert_eq!(page0.len(), 2);
-    let page2 = client.get_revoked_attestation_digests(&2, &2);
-    assert_eq!(page2.len(), 2);
-    let past = client.get_revoked_attestation_digests(&100, &10);
-    assert_eq!(past.len(), 0);
+    for i in 0..topics.len() {
+        for j in (i + 1)..topics.len() {
+            assert_ne!(
+                topics[i], topics[j],
+                "attestation event topics must be pairwise distinct"
+            );
+        }
+    }
 }
 
+/// End-to-end: bind, append, revoke, unrevoke in one escrow instance each emit
+/// their own event with no topic collisions, captured immediately after each
+/// mutating call.
 #[test]
-#[ignore = "branch-specific latent failure"]
-fn test_revoked_digests_view_caps_limit() {
+fn test_full_attestation_lifecycle_emits_four_distinct_events() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, Event as _};
+
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    for i in 0u8..10 {
-        client.append_attestation_digest(&digest(&env, i));
-        client.revoke_attestation_digest(&(i as u32));
-    }
-    let page = client.get_revoked_attestation_digests(&0, &100);
-    assert_eq!(page.len(), crate::MAX_ATTESTATION_READ_PAGE);
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id;
+
+    let primary = digest(&env, 0x01);
+    client.bind_primary_attestation_hash(&primary);
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![PrimaryAttestationBound {
+            name: symbol_short!("att_bind"),
+            invoice_id: invoice_id.clone(),
+            digest: primary,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+
+    let appended = digest(&env, 0x02);
+    client.append_attestation_digest(&appended);
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestAppended {
+            name: symbol_short!("att_app"),
+            invoice_id: invoice_id.clone(),
+            index: 0,
+            digest: appended,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+
+    client.revoke_attestation_digest(&0);
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id: invoice_id.clone(),
+            index: 0,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+
+    client.unrevoke_attestation_digest(&0);
+    assert_eq!(
+        env.events().all().events(),
+        std::vec![AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
 }

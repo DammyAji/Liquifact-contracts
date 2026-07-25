@@ -58,8 +58,6 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     // We will not fund or settle — just exercise legal hold at multiple points.
@@ -535,8 +533,6 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
@@ -770,8 +766,6 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     // Initial funding succeeds while hold is off.
@@ -896,15 +890,115 @@ fn setup_withdraw_with_token<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     let investor = soroban_sdk::Address::generate(env);
+    // Mint to the investor first so `fund`'s inbound transfer has a balance to pull from;
+    // that transfer moves `target` tokens into the escrow contract for withdraw() to send.
     sac_admin.mint(&investor, &target);
     client.fund(&investor, &target);
 
     (client, escrow_id, token, sme)
+}
+
+/// Cancel -> partial refund -> sweep liability-floor lifecycle.
+///
+/// Steps:
+/// 1. Init escrow with a real SAC token and fund by multiple investors (remain Open).
+/// 2. Mint `funded_amount + extra_dust` into the contract to simulate stray tokens.
+/// 3. Admin `cancel_funding` -> status 4 (cancelled).
+/// 4. One investor calls `refund` (distributed_principal increments).
+/// 5. Attempt a sweep larger than the extra dust fails (liability floor enforced).
+/// 6. Sweep up to the extra dust succeeds and transfers to treasury.
+/// 7. Double-refund of same investor panics with `NoContributionToRefund` behavior.
+#[test]
+fn test_cancel_refund_sweep_liability_floor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = install_stellar_asset_token(&env);
+    use crate::LiquifactEscrow;
+
+    // Deploy escrow instance bound to the SAC token
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Small target so test numbers are easy to reason about
+    let target = 1_000_000i128;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "CANREF001"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &sac.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Two investors fund while escrow remains OPEN (status 0)
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let a1 = 200_000i128;
+    let a2 = 300_000i128;
+    // Mint to each investor first so `fund`'s inbound transfer has a balance to pull from;
+    // those transfers move `total` tokens into the escrow contract.
+    sac.stellar.mint(&inv1, &a1);
+    sac.stellar.mint(&inv2, &a2);
+    client.fund(&inv1, &a1);
+    client.fund(&inv2, &a2);
+    let total = a1 + a2;
+    assert_eq!(client.get_escrow().funded_amount, total);
+
+    // Mint extra dust directly into the escrow contract (on top of `total` already there).
+    let extra = 50_000i128;
+    sac.stellar.mint(&escrow_id, &extra);
+
+    // Cancel funding (admin)
+    client.cancel_funding();
+    assert_eq!(client.get_escrow().status, 4u32);
+
+    // Refund inv1: should succeed, mark refunded, and increment DistributedPrincipal
+    client.refund(&inv1);
+    assert!(client.is_investor_refunded(&inv1));
+    assert_eq!(client.get_distributed_principal(), a1);
+
+    // Double-refund for inv1 must panic (no contribution to refund)
+    let dup_refund = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.refund(&inv1);
+    }));
+    assert!(dup_refund.is_err(), "double-refund must panic");
+
+    // Attempt sweep larger than allowed extra must fail (liability floor)
+    let too_large = extra + 1i128;
+    let sweep_fail = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.sweep_terminal_dust(&too_large);
+    }));
+    assert!(
+        sweep_fail.is_err(),
+        "sweep exceeding extra dust must be blocked"
+    );
+
+    // Sweep exactly the extra dust should succeed and transfer to treasury
+    let swept = client.sweep_terminal_dust(&extra);
+    assert_eq!(swept, extra);
+    assert_eq!(sac.token.balance(&treasury), extra);
+
+    // Refund remaining investor to complete distributed principal accounting
+    client.refund(&inv2);
+    assert!(client.is_investor_refunded(&inv2));
+    assert_eq!(client.get_distributed_principal(), total);
 }
 
 /// SME receives exactly `funded_amount` tokens and the escrow contract balance
@@ -1015,8 +1109,6 @@ fn withdraw_rejected_wrong_status_open() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
     // No funding — status is 0.
     client.withdraw(); // must panic: WithdrawalNotFunded
@@ -1059,8 +1151,6 @@ fn withdraw_rejected_insufficient_contract_balance() {
         &None,
         &None,
         &None,
-        &None,
-        &None::<i64>,
     );
 
     let investor = soroban_sdk::Address::generate(&env);
@@ -1099,16 +1189,17 @@ fn withdraw_event_includes_recipient() {
     let target = 5_000_000i128;
     let (client, escrow_id, _token, sme) = setup_withdraw_with_token(&env, target, "WD_EV001");
 
+    // Read the invoice id before the mutating call so we don't need another
+    // contract call afterward — each invocation clears the host event buffer.
+    let invoice_id = client.get_escrow().invoice_id;
+
     client.withdraw();
 
-    // Capture events before any getter call that would clear the buffer
-    let all_events = env.events().all().filter_by_contract(&escrow_id);
-
-    let escrow = client.get_escrow();
-
+    // Collect events immediately after the mutating call, before any further
+    // contract calls clear the host event buffer.
     let expected_xdr = SmeWithdrew {
         name: symbol_short!("sme_wd"),
-        invoice_id: escrow.invoice_id.clone(),
+        invoice_id,
         amount: target,
         recipient: sme,
         // Default escrow (no protocol_fee_bps): full funded_amount to the SME, zero fee.
@@ -1116,6 +1207,7 @@ fn withdraw_event_includes_recipient() {
     }
     .to_xdr(&env, &escrow_id);
 
+    let all_events = env.events().all().filter_by_contract(&escrow_id);
     let found = all_events.events().contains(&expected_xdr);
     assert!(
         found,

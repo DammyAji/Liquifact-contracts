@@ -188,10 +188,14 @@ pub fn transfer_into_escrow_with_balance_checks(
     to_contract: &Address,
     amount: i128,
 ) {
-    ensure(env, amount > 0, EscrowError::TransferAmountNotPositive);
-    let token_client = TokenClient::new(env, token);
-    let from_before = token_client.balance(from);
-    let contract_before = token_client.balance(to_contract);
+    ensure(
+        env,
+        amount > 0,
+        EscrowError::InboundTransferAmountNotPositive,
+    );
+    let token = TokenClient::new(env, token_addr);
+    let investor_before = token.balance(investor);
+    let contract_before = token.balance(to);
     ensure(
         env,
         from_before >= amount,
