@@ -366,6 +366,11 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a timestamp before the stored record.
     CollateralTimestampBackwards = 62,
 
+    /// `set_collateral_limit` received a non-positive limit.
+    CollateralLimitNotPositive = 63,
+    /// `record_sme_collateral_commitment` received an amount exceeding the admin limit.
+    CollateralLimitExceeded = 64,
+
     /// [`LiquifactEscrow::set_investors_allowlisted`] received an empty batch.
     InvestorBatchEmpty = 70,
     /// [`LiquifactEscrow::set_investors_allowlisted`] exceeded [`MAX_INVESTOR_ALLOWLIST_BATCH`].
@@ -872,9 +877,10 @@ pub enum DataKey {
     /// at [`LiquifactEscrow::withdraw`]; set once in [`LiquifactEscrow::init`].
     /// Written as `0` even when unconfigured so reads always succeed (`.unwrap_or(0)`).
     /// Stored as `i64` to match the [`InvoiceEscrow::yield_bps`] basis-point convention.
-    /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Admin-configured collateral limit.
+    CollateralLimit,
 }
 
 // --- Data types ---
@@ -2738,9 +2744,16 @@ impl LiquifactEscrow {
     }
 
     /// Retrieve the currently recorded SME collateral commitment metadata from storage.
-    /// Returns `None` if no commitment has been recorded yet.
     pub fn get_sme_collateral_commitment(env: Env) -> Option<SmeCollateralCommitment> {
         env.storage().instance().get(&DataKey::SmeCollateralPledge)
+    }
+
+    /// Retrieve the admin-configured collateral limit.
+    pub fn get_collateral_limit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CollateralLimit)
+            .unwrap_or(MAX_INVOICE_AMOUNT)
     }
 
     /// Retire the recorded SME collateral pledge.
@@ -3045,6 +3058,9 @@ impl LiquifactEscrow {
             asset != Symbol::new(&env, ""),
             EscrowError::CollateralAssetEmpty,
         );
+
+        let limit = Self::get_collateral_limit(env.clone());
+        ensure(&env, amount <= limit, EscrowError::CollateralLimitExceeded);
 
         // env.clone(): env is used again after this call for storage read/write, timestamp, and publish.
         let escrow = Self::load_escrow_require_sme(&env);
