@@ -1681,6 +1681,7 @@ impl LiquifactEscrow {
             .unwrap_or(false)
     }
 
+    /// Read the operational pause flag; defaults to `false` when unset.
     /// Read the operational pause flag ([`DataKey::Paused`]); defaults to `false` when unset.
     ///
     /// Orthogonal to [`LiquifactEscrow::legal_hold_active`] — neither flag affects the other.
@@ -1917,6 +1918,12 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .set(&DataKey::MaturityMaxHorizon, &max_horizon);
+
+        if let Some(deadline) = &funding_deadline {
+            env.storage()
+                .instance()
+                .set(&DataKey::FundingDeadline, deadline);
+        }
 
         env.storage()
             .instance()
@@ -2411,6 +2418,7 @@ impl LiquifactEscrow {
         Self::legal_hold_active(&env)
     }
 
+    /// Read the operational pause flag; defaults to `false` when unset.
     /// Whether the lightweight operational pause is active (defaults to `false` if unset).
     ///
     /// Independent of [`LiquifactEscrow::get_legal_hold`]: this reports the incident-response
@@ -3758,6 +3766,17 @@ impl LiquifactEscrow {
     pub fn raise_max_unique_investors(env: Env, new_cap: u32) -> u32 {
         let escrow = Self::load_escrow_require_admin(&env);
 
+        // We can reuse the existing EscrowNotOpenForFunding or similar open check.
+        // Or if there's a specific one, we use it. For now EscrowNotOpenForFunding is safe,
+        // or just rely on escrow.status == 0 since that's what the prompt implies.
+        // Actually, reusing EscrowError::EscrowNotOpenForFunding since CapLowerNotOpen is specific to lower.
+        // But wait, the issue said "parallel guards" and "open-state-only".
+        // Let's use EscrowError::EscrowNotOpenForFunding.
+        ensure(
+            &env,
+            escrow.status == 0,
+            EscrowError::EscrowNotOpenForFunding,
+        );
         require_funding_open(&env, escrow.status);
 
         let old_cap: Option<u32> = env
@@ -4181,6 +4200,13 @@ impl LiquifactEscrow {
         simple_fund: bool,
         committed_lock_secs: u64,
     ) -> InvoiceEscrow {
+        // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksFunding,
+        );
+
         investor.require_auth();
 
         ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
@@ -4456,6 +4482,12 @@ impl LiquifactEscrow {
     }
 
     pub fn settle(env: Env) -> InvoiceEscrow {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksSettlement,
+        );
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
             &env,
@@ -4584,6 +4616,12 @@ impl LiquifactEscrow {
     /// - [`EscrowError::WithdrawFeeArithmeticOverflow`] — `funded_amount * fee_bps` overflowed `i128`.
     /// - [`EscrowError::WithdrawNetArithmeticUnderflow`] — `funded_amount - fee` underflowed (unreachable for in-range `fee_bps`).
     pub fn withdraw(env: Env) -> InvoiceEscrow {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksWithdrawal,
+        );
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
             &env,
@@ -4710,6 +4748,12 @@ impl LiquifactEscrow {
     /// Emits typed [`EscrowError`] codes for legal hold, missing contribution, unsettled escrow,
     /// or an unexpired commitment lock.
     pub fn claim_investor_payout(env: Env, investor: Address) {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksInvestorClaims,
+        );
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
             &env,
@@ -5205,24 +5249,6 @@ impl LiquifactEscrow {
         // - ADR-007: storage key evolution policy (additive changes / key semantics).
         // - docs/escrow-ledger-time.md: all gating uses `Env::ledger().timestamp()` with `>=`.
 
-        // Extend persistent TTL for allowlisted investor entries.
-        for addr in allowlisted.iter() {
-            // Persistent allowlist entry.
-            env.storage().persistent().extend_ttl(
-                &DataKey::InvestorAllowlisted(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-            );
-            // Instance keys that may be per‑investor (contribution & claim lock).
-            env.storage().instance().extend_ttl(
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-            );
-        }
-
-        // Instance storage TTL is contract-wide under Soroban SDK 25. The call above covers
-        // Escrow, Version, LegalHold, snapshots, caps, and other instance keys.
-
         // Persistent per-investor keys and allowlist entries (independent TTL per address).
         for addr in allowlisted.iter() {
             let k = DataKey::InvestorAllowlisted(addr.clone());
@@ -5255,6 +5281,10 @@ impl LiquifactEscrow {
         }
     }
 
+    /// Update the SME beneficiary address via dual consent (current SME and admin).
+    ///
+    /// Allowed only in non-terminal states (0 = open, 1 = funded).
+    /// Invariant: after rotation, only the new SME may withdraw/settle.
     /// Propose a new admin (`PendingAdmin`) — step 1 of a two-step handover.
     ///
     /// Requires current admin authorization. The destination must differ from the current admin.
