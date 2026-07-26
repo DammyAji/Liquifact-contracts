@@ -109,12 +109,16 @@ pub struct CollateralCommitmentCleared {
 
 ## Error codes
 
-| Code | Variant              | Trigger                                            |
-|------|----------------------|----------------------------------------------------|
-| 1    | `NotInitialized`     | Escrow not yet created via `init`                  |
-| 2    | `NotOpen`            | Reserved for future status guards                  |
-| 3    | `NotFunded`          | Reserved for future status guards                  |
-| 4    | `NoCollateralToClear`| `clear_sme_collateral_commitment` with no pledge   |
+For the full details of all collateral-related error codes, see [`docs/collateral-errors.md`](collateral-errors.md).
+
+| Code | Variant | Trigger | Recommended client action |
+| ---: | --- | --- | --- |
+| 20 | `EscrowNotInitialized` | `record_sme_collateral_commitment` / `clear_sme_collateral_commitment` called before `init` | Call `init` first |
+| 60 | `CollateralAmountNotPositive` | `record_sme_collateral_commitment` with `amount <= 0` | Provide positive metadata amount |
+| 61 | `CollateralAssetEmpty` | `record_sme_collateral_commitment` with empty asset symbol | Provide non-empty asset label |
+| 62 | `CollateralTimestampBackwards` | `record_sme_collateral_commitment` with timestamp `<` stored timestamp | Use monotonic timestamps |
+| 169 | `NoCollateralToClear` | `clear_sme_collateral_commitment` with no pledge active | Check if collateral is recorded first |
+
 
 ---
 

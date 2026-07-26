@@ -44,8 +44,10 @@ Codes are grouped by domain so SDKs can map coarse categories without parsing va
 | Funding deadline / balance | 163–164 | Post-deadline funding and contract balance sufficiency | 163, 164 |
 
 See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
-[`docs/ESCROW_BENEFICIARY_ROTATION.md`](ESCROW_BENEFICIARY_ROTATION.md), and
+[`docs/ESCROW_BENEFICIARY_ROTATION.md`](ESCROW_BENEFICIARY_ROTATION.md),
+[`docs/collateral-errors.md`](collateral-errors.md), and
 [`docs/adr/ADR-006-dust-sweep-and-token-safety.md`](adr/ADR-006-dust-sweep-and-token-safety.md).
+
 
 ## Canonical Reference Table
 
@@ -146,6 +148,7 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 165 | `ClaimBatchEmpty` | `claim_payouts_batch` | `investors` vec is empty | Pass at least one investor | typed |
 | 166 | `ClaimBatchTooLarge` | `claim_payouts_batch` | `investors` vec exceeds `MAX_CLAIM_BATCH` (32) | Split into smaller batches | typed |
 | 167 | `FundingDeadlinePassed` | `init`, `fund`, `fund_with_commitment`, `fund_batch` | `funding_deadline` configured and `ledger.timestamp()` past deadline | Funding window closed; do not retry deposits | typed |
+| 169 | `NoCollateralToClear` | `clear_sme_collateral_commitment` | `DataKey::SmeCollateralPledge` is missing | Check if collateral is recorded first | typed |
 | 200 | `PartialSettleUnauthorizedCaller` | `partial_settle` | `caller` is neither `sme_address` nor `admin` | Call as the SME or admin | typed |
 | 201 | `LegalHoldBlocksPartialSettle` | `partial_settle` | legal hold active | Complete legal-hold clear workflow | typed |
 | 202 | `PartialSettleNotOpen` | `partial_settle` | escrow status `!= 0` (open) | Partial settle only while open | typed |
@@ -247,6 +250,7 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 162 | `New SME address must differ from current beneficiary` |
 | 163 | `Funding deadline has passed` |
 | 164 | `Contract balance below funded amount` |
+| 169 | `n/a — clear_sme_collateral_commitment with no pledge` |
 
 ## Client Guidance
 
