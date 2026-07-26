@@ -295,8 +295,8 @@ fn withdraw_extreme_amount_with_full_fee_net_zero_succeeds() {
 
     let updated = client.withdraw();
     assert_eq!(updated.status, 3u32);
-    assert_eq!(sac.balance(&sme), 0);
-    assert_eq!(sac.balance(&treasury), amount);
+    assert_eq!(sac_admin.balance(&sme), 0);
+    assert_eq!(sac_admin.balance(&treasury), amount);
 }
 
 #[test]
@@ -340,7 +340,95 @@ fn withdraw_fee_overflow_rejected_with_typed_error() {
     sac_admin.mint(&investor, &amount);
     client.fund(&investor, &amount);
 
-    assert_contract_error(client.try_withdraw(), EscrowError::WithdrawFeeArithmeticOverflow);
+    assert_contract_error(
+        client.try_withdraw(),
+        EscrowError::WithdrawFeeArithmeticOverflow,
+    );
+}
+
+#[test]
+fn withdraw_zero_net_payout_near_zero_does_not_underflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = super::LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "WZEROEDGE"),
+        &sme,
+        &1i128,
+        &0i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10_000i64),
+    );
+
+    let investor = Address::generate(&env);
+    sac_admin.mint(&investor, &1);
+    client.fund(&investor, &1);
+
+    let updated = client.withdraw();
+    assert_eq!(updated.status, 3u32);
+    assert_eq!(sac_admin.balance(&sme), 0);
+    assert_eq!(sac_admin.balance(&treasury), 1);
+}
+
+#[test]
+fn settle_large_principal_with_max_yield_is_rejected_by_init_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = super::LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let amount = i128::MAX / 4;
+
+    assert_contract_error(
+        client.try_init(
+            &admin,
+            &String::from_str(&env, "SETTLESAFE"),
+            &sme,
+            &amount,
+            &10_000i64,
+            &0u64,
+            &token_id,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        ),
+        EscrowError::AmountExceedsMax,
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
