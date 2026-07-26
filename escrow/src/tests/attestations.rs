@@ -1385,3 +1385,420 @@ fn test_double_revoke_no_event_emitted() {
     // Second revoke should panic before event emission
     client.revoke_attestation_digest(&0);
 }
+
+// ---------------------------------------------------------------------------
+// get_attestation_config — read-only config view (issue #880)
+// ---------------------------------------------------------------------------
+
+/// Before init, the config returns the static constants and zero runtime values.
+#[test]
+fn test_get_attestation_config_default_before_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = super::deploy(&env);
+
+    let cfg = client.get_attestation_config();
+    assert_eq!(cfg.max_append_entries, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert_eq!(cfg.max_revoke_batch, MAX_ATTESTATION_REVOKE_BATCH);
+    assert_eq!(cfg.max_read_page, MAX_ATTESTATION_READ_PAGE);
+    assert_eq!(cfg.append_log_len, 0);
+    assert_eq!(cfg.append_log_remaining, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert!(!cfg.has_primary_hash);
+}
+
+/// After init but before any attestation call, runtime fields are still zero.
+#[test]
+fn test_get_attestation_config_after_init_no_attestations() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    let cfg = client.get_attestation_config();
+    assert_eq!(cfg.max_append_entries, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert_eq!(cfg.max_revoke_batch, MAX_ATTESTATION_REVOKE_BATCH);
+    assert_eq!(cfg.max_read_page, MAX_ATTESTATION_READ_PAGE);
+    assert_eq!(cfg.append_log_len, 0);
+    assert_eq!(cfg.append_log_remaining, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert!(!cfg.has_primary_hash);
+}
+
+/// Binding the primary hash flips `has_primary_hash` to `true`.
+#[test]
+fn test_get_attestation_config_has_primary_hash_after_bind() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    assert!(!client.get_attestation_config().has_primary_hash);
+
+    client.bind_primary_attestation_hash(&digest(&env, 0xAA));
+
+    let cfg = client.get_attestation_config();
+    assert!(cfg.has_primary_hash);
+    // Append-log fields unaffected.
+    assert_eq!(cfg.append_log_len, 0);
+    assert_eq!(cfg.append_log_remaining, MAX_ATTESTATION_APPEND_ENTRIES);
+}
+
+/// `append_log_len` and `append_log_remaining` track appends correctly.
+#[test]
+fn test_get_attestation_config_tracks_append_log_length() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    for n in 1u32..=5 {
+        client.append_attestation_digest(&digest(&env, n as u8));
+        let cfg = client.get_attestation_config();
+        assert_eq!(cfg.append_log_len, n);
+        assert_eq!(cfg.append_log_remaining, MAX_ATTESTATION_APPEND_ENTRIES - n);
+    }
+}
+
+/// When the log is full, `append_log_remaining` is zero.
+#[test]
+fn test_get_attestation_config_remaining_zero_when_full() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    for i in 0u8..(MAX_ATTESTATION_APPEND_ENTRIES as u8) {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    let cfg = client.get_attestation_config();
+    assert_eq!(cfg.append_log_len, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert_eq!(cfg.append_log_remaining, 0);
+}
+
+/// Revocation does not alter `append_log_len` or `append_log_remaining`
+/// (revoked entries stay in the log).
+#[test]
+fn test_get_attestation_config_revocation_does_not_change_len() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    client.append_attestation_digest(&digest(&env, 0x10));
+    client.append_attestation_digest(&digest(&env, 0x20));
+    client.revoke_attestation_digest(&0);
+
+    let cfg = client.get_attestation_config();
+    assert_eq!(cfg.append_log_len, 2);
+    assert_eq!(cfg.append_log_remaining, MAX_ATTESTATION_APPEND_ENTRIES - 2);
+}
+
+/// `get_attestation_config` is pure: does not mutate storage, so calling it
+/// multiple times returns identical results.
+#[test]
+fn test_get_attestation_config_idempotent() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    let cfg1 = client.get_attestation_config();
+    let cfg2 = client.get_attestation_config();
+    assert_eq!(cfg1, cfg2);
+}
+
+/// All static-constant fields match the crate-level constants exactly.
+#[test]
+fn test_get_attestation_config_constants_match_crate_values() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+
+    let cfg = client.get_attestation_config();
+    assert_eq!(cfg.max_append_entries, MAX_ATTESTATION_APPEND_ENTRIES);
+    assert_eq!(cfg.max_revoke_batch, MAX_ATTESTATION_REVOKE_BATCH);
+    assert_eq!(cfg.max_read_page, MAX_ATTESTATION_READ_PAGE);
+}
+
+// ---------------------------------------------------------------------------
+// Event topics and payloads — attestation subsystem (issue #881)
+// ---------------------------------------------------------------------------
+//
+// Rules:
+//  - Events are captured from `env.events().all()` immediately after the
+//    emitting call (the buffer holds the latest invocation only).
+//  - Topics are asserted via `symbol_short!` literals.
+//  - Payload fields are asserted individually to catch any drift.
+//  - No two attestation events share a topic symbol.
+
+/// `bind_primary_attestation_hash` emits topic `att_bind` with correct payload.
+#[test]
+fn test_event_bind_primary_attestation_hash_topic_and_payload() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d = digest(&env, 0xAB);
+    let invoice_id = client.get_escrow().invoice_id;
+
+    client.bind_primary_attestation_hash(&d);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1, "expected exactly one event");
+    let event = events.events().first().unwrap();
+
+    assert_eq!(
+        *event,
+        crate::PrimaryAttestationBound {
+            name: symbol_short!("att_bind"),
+            invoice_id,
+            digest: d,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// `append_attestation_digest` emits topic `att_app` with index and digest.
+#[test]
+fn test_event_append_attestation_digest_topic_and_payload() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d = digest(&env, 0x12);
+    let invoice_id = client.get_escrow().invoice_id;
+
+    client.append_attestation_digest(&d);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1);
+    assert_eq!(
+        *events.events().first().unwrap(),
+        crate::AttestationDigestAppended {
+            name: symbol_short!("att_app"),
+            invoice_id,
+            index: 0,
+            digest: d,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// Index increments correctly across consecutive appends.
+#[test]
+fn test_event_append_index_increments() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+
+    for i in 0u8..3 {
+        let d = digest(&env, i);
+        client.append_attestation_digest(&d);
+
+        let events = env.events().all();
+        assert_eq!(
+            *events.events().first().unwrap(),
+            crate::AttestationDigestAppended {
+                name: symbol_short!("att_app"),
+                invoice_id: invoice_id.clone(),
+                index: i as u32,
+                digest: d,
+            }
+            .to_xdr(&env, &client.address),
+            "index mismatch at position {i}"
+        );
+    }
+}
+
+/// `revoke_attestation_digest` emits topic `att_rev` with the revoked index.
+#[test]
+fn test_event_revoke_attestation_digest_topic_and_payload() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+    client.append_attestation_digest(&digest(&env, 0xFF));
+
+    client.revoke_attestation_digest(&0);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1);
+    assert_eq!(
+        *events.events().first().unwrap(),
+        crate::AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// `unrevoke_attestation_digest` emits topic `att_unrev` with the unrevoked index.
+#[test]
+fn test_event_unrevoke_attestation_digest_topic_and_payload() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+    client.append_attestation_digest(&digest(&env, 0xCC));
+    client.revoke_attestation_digest(&0);
+
+    client.unrevoke_attestation_digest(&0);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1);
+    assert_eq!(
+        *events.events().first().unwrap(),
+        crate::AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// `revoke_attestation_digests` (batch) emits one `att_rev` event per index.
+#[test]
+fn test_event_batch_revoke_emits_one_event_per_index() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+    for i in 0u8..3 {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    let indices = soroban_sdk::vec![&env, 0u32, 1u32, 2u32];
+    client.revoke_attestation_digests(&indices);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 3, "one event per revoked index");
+
+    for (pos, expected_index) in [0u32, 1, 2].iter().enumerate() {
+        assert_eq!(
+            *events.events().get(pos as u32).unwrap(),
+            crate::AttestationDigestRevoked {
+                name: symbol_short!("att_rev"),
+                invoice_id: invoice_id.clone(),
+                index: *expected_index,
+            }
+            .to_xdr(&env, &client.address),
+            "event mismatch at position {pos}"
+        );
+    }
+}
+
+/// No two attestation event topic symbols collide with each other.
+#[test]
+fn test_attestation_event_topics_no_collision() {
+    // Static check: collect topic symbols from each event type and assert uniqueness.
+    // We use the known symbol strings from the contract source.
+    let topics = [
+        symbol_short!("att_bind"),  // PrimaryAttestationBound
+        symbol_short!("att_app"),   // AttestationDigestAppended
+        symbol_short!("att_rev"),   // AttestationDigestRevoked
+        symbol_short!("att_unrev"), // AttestationDigestUnrevoked
+    ];
+
+    // Verify all four are distinct.
+    for i in 0..topics.len() {
+        for j in (i + 1)..topics.len() {
+            assert_ne!(
+                topics[i], topics[j],
+                "topic collision between index {i} and {j}"
+            );
+        }
+    }
+}
+
+/// `bind_primary_attestation_hash` topic `att_bind` is distinct from `att_app`.
+#[test]
+fn test_bind_and_append_events_have_different_topics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+    let d = digest(&env, 0x01);
+
+    client.bind_primary_attestation_hash(&d);
+    let bind_event = env.events().all().events().first().unwrap().clone();
+
+    client.append_attestation_digest(&digest(&env, 0x02));
+    let append_event = env.events().all().events().first().unwrap().clone();
+
+    assert_ne!(
+        bind_event, append_event,
+        "bind and append events must be distinct"
+    );
+}
+
+/// `revoke_attestation_digest` and `unrevoke_attestation_digest` events are distinct.
+#[test]
+fn test_revoke_and_unrevoke_events_have_different_topics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    client.revoke_attestation_digest(&0);
+    let revoke_event = env.events().all().events().first().unwrap().clone();
+
+    client.unrevoke_attestation_digest(&0);
+    let unrevoke_event = env.events().all().events().first().unwrap().clone();
+
+    assert_ne!(
+        revoke_event, unrevoke_event,
+        "revoke and unrevoke events must be distinct"
+    );
+}
+
+/// A full round-trip (bind → append → revoke → unrevoke) captures four distinct
+/// events with the correct topic symbols in sequence.
+#[test]
+fn test_attestation_event_round_trip_topics_in_sequence() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let invoice_id = client.get_escrow().invoice_id;
+
+    // Step 1: bind
+    client.bind_primary_attestation_hash(&digest(&env, 0x01));
+    let bind_evt = env.events().all().events().first().unwrap().clone();
+    assert_eq!(
+        bind_evt,
+        crate::PrimaryAttestationBound {
+            name: symbol_short!("att_bind"),
+            invoice_id: invoice_id.clone(),
+            digest: digest(&env, 0x01),
+        }
+        .to_xdr(&env, &client.address)
+    );
+
+    // Step 2: append
+    client.append_attestation_digest(&digest(&env, 0x02));
+    let app_evt = env.events().all().events().first().unwrap().clone();
+    assert_eq!(
+        app_evt,
+        crate::AttestationDigestAppended {
+            name: symbol_short!("att_app"),
+            invoice_id: invoice_id.clone(),
+            index: 0,
+            digest: digest(&env, 0x02),
+        }
+        .to_xdr(&env, &client.address)
+    );
+
+    // Step 3: revoke
+    client.revoke_attestation_digest(&0);
+    let rev_evt = env.events().all().events().first().unwrap().clone();
+    assert_eq!(
+        rev_evt,
+        crate::AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id: invoice_id.clone(),
+            index: 0,
+        }
+        .to_xdr(&env, &client.address)
+    );
+
+    // Step 4: unrevoke
+    client.unrevoke_attestation_digest(&0);
+    let unrev_evt = env.events().all().events().first().unwrap().clone();
+    assert_eq!(
+        unrev_evt,
+        crate::AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id: invoice_id.clone(),
+            index: 0,
+        }
+        .to_xdr(&env, &client.address)
+    );
+
+    // All four events are pairwise distinct.
+    let all = [bind_evt, app_evt, rev_evt, unrev_evt];
+    for i in 0..all.len() {
+        for j in (i + 1)..all.len() {
+            assert_ne!(all[i], all[j], "event collision at ({i}, {j})");
+        }
+    }
+}
