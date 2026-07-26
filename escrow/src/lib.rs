@@ -358,6 +358,11 @@ pub enum EscrowError {
     AttestationBatchTooLarge = 55,
     /// [`LiquifactEscrow::unrevoke_attestation_digest`] called on an index that is not revoked.
     AttestationNotRevoked = 56,
+    /// [`LiquifactEscrow::get_revoked_attestation_digests`] received a zero page limit.
+    AttestationReadLimitZero = 57,
+    /// [`LiquifactEscrow::get_revoked_attestation_digests`] exceeded
+    /// [`MAX_ATTESTATION_READ_PAGE`].
+    AttestationReadLimitTooLarge = 58,
 
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a non-positive amount.
     CollateralAmountNotPositive = 60,
@@ -2884,21 +2889,31 @@ impl LiquifactEscrow {
             .unwrap_or(false)
     }
 
+    /// Return revoked attestation entries from `start`, bounded by `limit`.
+    ///
+    /// `limit` must be in `1..=MAX_ATTESTATION_READ_PAGE`. Out-of-range limits are
+    /// rejected with typed errors rather than being silently clamped.
     pub fn get_revoked_attestation_digests(
         env: Env,
         start: u32,
         limit: u32,
     ) -> Vec<AttestationDigestInfo> {
+        ensure(&env, limit > 0, EscrowError::AttestationReadLimitZero);
+        ensure(
+            &env,
+            limit <= MAX_ATTESTATION_READ_PAGE,
+            EscrowError::AttestationReadLimitTooLarge,
+        );
+
         let log = Self::get_attestation_append_log(env.clone());
         let len = log.len();
-        if start >= len || limit == 0 {
+        if start >= len {
             return Vec::new(&env);
         }
 
-        let actual_limit = limit.min(MAX_ATTESTATION_READ_PAGE);
         let mut result = Vec::new(&env);
         let mut i = start;
-        while i < len && result.len() < actual_limit {
+        while i < len && result.len() < limit {
             if Self::is_attestation_revoked(env.clone(), i) {
                 let digest = log.get(i).unwrap();
                 result.push_back(AttestationDigestInfo {

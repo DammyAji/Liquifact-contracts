@@ -87,6 +87,8 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 54 | `AttestationBatchEmpty` | `revoke_attestation_digests` | `indices.len() == 0` | Pass at least one index | typed |
 | 55 | `AttestationBatchTooLarge` | `revoke_attestation_digests` | `indices.len() > MAX_ATTESTATION_REVOKE_BATCH` | Split into smaller batches | typed |
 | 56 | `AttestationNotRevoked` | `unrevoke_attestation_digest` | index is not currently revoked | Only unrevoke previously revoked entries | typed |
+| 57 | `AttestationReadLimitZero` | `get_revoked_attestation_digests` | `limit == 0` | Request at least one entry | typed |
+| 58 | `AttestationReadLimitTooLarge` | `get_revoked_attestation_digests` | `limit > MAX_ATTESTATION_READ_PAGE` | Use a limit no greater than the page maximum | typed |
 | 60 | `CollateralAmountNotPositive` | `record_sme_collateral_commitment` | `amount <= 0` | Provide positive metadata amount | typed |
 | 61 | `CollateralAssetEmpty` | `record_sme_collateral_commitment` | asset symbol empty | Provide non-empty asset label | typed |
 | 62 | `CollateralTimestampBackwards` | `record_sme_collateral_commitment` | new timestamp `<` stored timestamp | Use monotonic timestamps | typed |
