@@ -938,6 +938,31 @@ pub struct YieldTier {
     pub yield_bps: i64,
 }
 
+/// Result of yield-tier resolution for a given commitment.
+///
+/// Returned by [`LiquifactEscrow::preview_yield_tier`] and produced internally by
+/// `effective_yield_for_commitment`. Replaces the former `(i64, u64)` tuple so that
+/// callers can reference fields by name instead of by position.
+///
+/// # Fields
+/// - `effective_yield_bps`: The resolved yield in basis points. Equals the escrow base
+///   yield when no tier matched, or the highest qualifying tier's `yield_bps` otherwise.
+/// - `matched_lock_secs`: The `min_lock_secs` of the matched tier, or `0` when the base
+///   yield applies (no tier table, empty table, zero-lock commitment, or no tier qualified).
+///
+/// Derive rationale:
+/// - `Clone`: required for use in `Option` and event fields.
+/// - `Debug`: improves failure diagnostics in tests.
+/// - `PartialEq`: allows deterministic assertion in tests.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct YieldResolution {
+    /// Resolved yield in basis points for this commitment.
+    pub effective_yield_bps: i64,
+    /// `min_lock_secs` of the matched tier, or `0` when base yield applies.
+    pub matched_lock_secs: u64,
+}
+
 /// Captured exactly once at the first ledger transition to **funded** so settlement and claims can
 /// use a stable total principal and target. If the threshold-crossing deposit overshoots
 /// [`InvoiceEscrow::funding_target`], [`FundingCloseSnapshot::total_principal`] records the full
@@ -1744,36 +1769,45 @@ impl LiquifactEscrow {
         }
     }
 
-    /// Returns `(effective_yield_bps, matched_lock_secs)` for a given commitment.
+    /// Returns a [`YieldResolution`] for a given commitment.
     ///
     /// Scans [`DataKey::YieldTierTable`] and picks the tier with the highest `yield_bps`
     /// where `committed_lock_secs >= tier.min_lock_secs`. Returns base yield when:
     /// `committed_lock_secs == 0`, no tier table exists, or table is empty.
     ///
     /// Example with `base=800, tiers=[(100,900),(200,1000),(300,1200)]`:
-    /// - lock=50  -> (800, 0)    no tier matched
-    /// - lock=100 -> (900, 100)  tier 0
-    /// - lock=250 -> (1000, 200) tier 1
-    /// - lock=300 -> (1200, 300) tier 2 (highest)
+    /// - lock=50  -> `{ effective_yield_bps: 800, matched_lock_secs: 0 }`   no tier matched
+    /// - lock=100 -> `{ effective_yield_bps: 900, matched_lock_secs: 100 }` tier 0
+    /// - lock=250 -> `{ effective_yield_bps: 1000, matched_lock_secs: 200 }` tier 1
+    /// - lock=300 -> `{ effective_yield_bps: 1200, matched_lock_secs: 300 }` tier 2 (highest)
     ///
     /// `matched_lock_secs` is the `min_lock_secs` of the matched tier, or `0` for base yield.
     fn effective_yield_for_commitment(
         env: &Env,
         base_yield: i64,
         committed_lock_secs: u64,
-    ) -> (i64, u64) {
+    ) -> YieldResolution {
         if committed_lock_secs == 0 {
-            return (base_yield, 0);
+            return YieldResolution {
+                effective_yield_bps: base_yield,
+                matched_lock_secs: 0,
+            };
         }
         let Some(tiers) = env
             .storage()
             .instance()
             .get::<DataKey, Vec<YieldTier>>(&DataKey::YieldTierTable)
         else {
-            return (base_yield, 0);
+            return YieldResolution {
+                effective_yield_bps: base_yield,
+                matched_lock_secs: 0,
+            };
         };
         if tiers.is_empty() {
-            return (base_yield, 0);
+            return YieldResolution {
+                effective_yield_bps: base_yield,
+                matched_lock_secs: 0,
+            };
         }
         let mut best = base_yield;
         let mut best_lock = 0u64;
@@ -1785,7 +1819,10 @@ impl LiquifactEscrow {
                 best_lock = t.min_lock_secs;
             }
         }
-        (best, best_lock)
+        YieldResolution {
+            effective_yield_bps: best,
+            matched_lock_secs: best_lock,
+        }
     }
 
     /// Initialize escrow. `funding_target` defaults to `amount`.
@@ -2731,7 +2768,7 @@ impl LiquifactEscrow {
     ///
     /// > **Note:** this preview reflects the rule applied at **first deposit only**. A
     /// > follow-on [`LiquifactEscrow::fund`] call does not re-select a tier.
-    pub fn preview_yield_tier(env: Env, amount: i128, lock: u64) -> (i64, u64) {
+    pub fn preview_yield_tier(env: Env, amount: i128, lock: u64) -> YieldResolution {
         let _ = amount; // accepted for signature parity with fund_with_commitment; unused in lock-only selection
         let escrow = Self::get_escrow(env.clone());
         Self::effective_yield_for_commitment(&env, escrow.yield_bps, lock)
@@ -4101,7 +4138,7 @@ impl LiquifactEscrow {
 
         // Capture the effective yield and tier lock threshold in locals so event fields can
         // be populated without post-write storage reads.
-        let (investor_effective_yield_bps, tier_lock_secs) = if simple_fund {
+        let resolution: YieldResolution = if simple_fund {
             // Non-tiered deposits never carry a commitment lock.
             if prev == 0 {
                 Self::set_persistent_investor_effective_yield(
@@ -4110,22 +4147,32 @@ impl LiquifactEscrow {
                     escrow.yield_bps,
                 );
                 Self::set_persistent_investor_claim_not_before(&env, investor.clone(), 0u64);
-                (escrow.yield_bps, 0u64)
+                YieldResolution {
+                    effective_yield_bps: escrow.yield_bps,
+                    matched_lock_secs: 0,
+                }
             } else {
                 // Returning investor: yield was set on first deposit; read it for the event.
                 // If prev > 0, preserve existing effective yield and claim lock.
                 // Read stored yield for the event (falls back to escrow default for new investors).
-                (
-                    Self::get_persistent_investor_effective_yield(&env, investor.clone())
-                        .unwrap_or(escrow.yield_bps),
-                    0u64,
-                )
+                YieldResolution {
+                    effective_yield_bps: Self::get_persistent_investor_effective_yield(
+                        &env,
+                        investor.clone(),
+                    )
+                    .unwrap_or(escrow.yield_bps),
+                    matched_lock_secs: 0,
+                }
             }
         } else {
             ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
-            let (eff, lock) =
+            let res =
                 Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            Self::set_persistent_investor_effective_yield(&env, investor.clone(), eff);
+            Self::set_persistent_investor_effective_yield(
+                &env,
+                investor.clone(),
+                res.effective_yield_bps,
+            );
             let now = env.ledger().timestamp();
             let claim_nb = if committed_lock_secs == 0 {
                 0u64
@@ -4143,8 +4190,10 @@ impl LiquifactEscrow {
                 );
             }
             Self::set_persistent_investor_claim_not_before(&env, investor.clone(), claim_nb);
-            (eff, lock)
+            res
         };
+        let investor_effective_yield_bps = resolution.effective_yield_bps;
+        let tier_lock_secs = resolution.matched_lock_secs;
 
         escrow.funded_amount = escrow
             .funded_amount
