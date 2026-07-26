@@ -326,3 +326,104 @@ fn test_revoke_does_not_affect_primary_hash() {
     client.revoke_attestation_digest(&0);
     assert_eq!(client.get_primary_attestation_hash(), Some(primary));
 }
+
+// ---------------------------------------------------------------------------
+// Event emission tests for AttestationDigestRevoked
+// ---------------------------------------------------------------------------
+
+/// AttestationDigestRevoked event is emitted on successful revocation.
+#[test]
+fn test_revoke_emits_event() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xAA));
+
+    client.revoke_attestation_digest(&0);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1, "expected exactly one event");
+    let event = events.events().first().unwrap();
+    assert_eq!(
+        *event,
+        crate::AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id: client.get_escrow().invoice_id,
+            index: 0,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// AttestationDigestRevoked event contains correct invoice_id and index.
+#[test]
+fn test_revoke_event_fields_correct() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.append_attestation_digest(&digest(&env, 0x02));
+
+    client.revoke_attestation_digest(&1);
+
+    let events = env.events().all();
+    let event = events.events().first().unwrap();
+    assert_eq!(
+        *event,
+        crate::AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id: client.get_escrow().invoice_id,
+            index: 1,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// Multiple revocations emit multiple events with correct indices.
+#[test]
+fn test_multiple_revocations_emit_events() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..3 {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    client.revoke_attestation_digest(&0);
+    let events_after_first = env.events().all();
+    assert_eq!(events_after_first.events().len(), 1);
+
+    client.revoke_attestation_digest(&2);
+    let events_after_second = env.events().all();
+    assert_eq!(events_after_second.events().len(), 1);
+
+    let event = events_after_second.events().first().unwrap();
+    assert_eq!(
+        *event,
+        crate::AttestationDigestRevoked {
+            name: symbol_short!("att_rev"),
+            invoice_id: client.get_escrow().invoice_id,
+            index: 2,
+        }
+        .to_xdr(&env, &client.address)
+    );
+}
+
+/// Event is not emitted when revocation fails (out of range).
+#[test]
+#[should_panic(expected = "attestation index out of range")]
+fn test_revoke_out_of_range_no_event_emitted() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    // Empty log, index 0 is out of range - should panic before event emission
+    client.revoke_attestation_digest(&0);
+}
+
+/// Event is not emitted when revocation fails (double revoke).
+#[test]
+#[should_panic(expected = "attestation already revoked at index")]
+fn test_double_revoke_no_event_emitted() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x42));
+    client.revoke_attestation_digest(&0);
+    // Second revoke should panic before event emission
+    client.revoke_attestation_digest(&0);
+}

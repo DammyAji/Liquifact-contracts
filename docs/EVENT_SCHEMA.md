@@ -55,6 +55,7 @@ The current contract defines 19 event structs.
 | `TreasuryDustSwept` | `dust_sw` | `sweep_terminal_dust` |
 | `PrimaryAttestationBound` | `att_bind` | `bind_primary_attestation_hash` |
 | `AttestationDigestAppended` | `att_app` | `append_attestation_digest` |
+| `AttestationDigestRevoked` | `att_rev` | `revoke_attestation_digest` |
 | `AllowlistEnabledChanged` | `al_ena` | `set_allowlist_active` |
 | `InvestorAllowlistChanged` | `al_set` | `set_investor_allowlisted`, `set_investors_allowlisted` |
 
@@ -406,6 +407,22 @@ Data:
 | `invoice_id` | `Symbol` |
 | `index` | `u32` |
 | `digest` | `BytesN<32>` |
+
+### `AttestationDigestRevoked`
+
+Emitted after successful `revoke_attestation_digest`. Marks a previously appended
+digest as superseded without deleting the original entry from the append log.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `attestation_digest_revoked` |
+| 1 | `name` | `Symbol` | `att_rev` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+| 3 | `index` | `u32` | Revoked attestation index |
+
+Data: empty map; this struct has no non-topic fields.
 
 ### `AllowlistEnabledChanged`
 
