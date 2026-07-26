@@ -33,31 +33,49 @@ short routing symbol passed with `symbol_short!(...)`, such as `funded` or
 
 ## Event Catalog
 
-The current contract defines 20 event structs.
+The current contract defines 38 event structs.
 
 | Rust event | `name` symbol | Entrypoint(s) |
 |---|---:|---|
-| `EscrowInitialized` | `escrow_ii` | `init` |
-| `MaxUniqueInvestorsCapLowered` | `inv_cap` | `lower_max_unique_investors` |
-| `EscrowFunded` | `funded` | `fund`, `fund_with_commitment` |
-| `EscrowSettled` | `escrow_sd` | `settle` |
-| `MaturityUpdatedEvent` | `maturity` | `update_maturity` |
-| `AdminTransferredEvent` | `admin` | `accept_admin` |
+| `AdminAcceptedEvent` | `adm_acc` | `accept_admin` |
+| `AdminProposalCancelled` | `adm_can` | `cancel_pending_admin` |
 | `AdminProposedEvent` | `adm_prop` | `propose_admin`, `transfer_admin` |
-| `BeneficiaryRotated` | `ben_rot` | `rotate_beneficiary` |
-| `FundingTargetUpdated` | `fund_tgt` | `update_funding_target` |
-| `LegalHoldChanged` | `legalhld` | `set_legal_hold`, `clear_legal_hold` |
-| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment` |
-| `SmeWithdrew` | `sme_wd` | `withdraw` |
-| `InvestorPayoutClaimed` | `inv_claim` | `claim_investor_payout` |
-| `FundingCancelled` | `fund_can` | `cancel_funding` |
-| `InvestorRefundedEvt` | `refunded` | `refund` |
-| `TreasuryDustSwept` | `dust_sw` | `sweep_terminal_dust` |
-| `PrimaryAttestationBound` | `att_bind` | `bind_primary_attestation_hash` |
-| `AttestationDigestAppended` | `att_app` | `append_attestation_digest` |
+| `AdminTransferredEvent` | `admin` | (never emitted; placeholder for `accept_admin` doc) |
 | `AllowlistEnabledChanged` | `al_ena` | `set_allowlist_active` |
+| `AttestationDigestAppended` | `att_app` | `append_attestation_digest` |
+| `AttestationDigestRevoked` | `att_rev` | `revoke_attestation_digest` |
+| `AttestationDigestUnrevoked` | `att_unrev` | `unrevoke_attestation_digest` |
+| `BeneficiaryRotated` | `ben_rot` | `rotate_beneficiary` |
+| `BenChange` | `ben_chg` | `rotate_beneficiary` |
+| `CollateralClearedEvt` | — | `clear_sme_collateral_commitment` |
+| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment` |
+| `ContractUpgraded` | `upgrade` | `upgrade` |
+| `DeprecatedTransferAdminUsed` | `depr_xfer` | `transfer_admin` |
+| `EscrowFunded` | `funded` | `fund`, `fund_with_commitment` |
+| `EscrowInitialized` | `escrow_ii` | `init` |
+| `EscrowPartialSettle` | `part_set` | `partial_settle` |
+| `EscrowSettled` | `escrow_sd` | `settle` |
+| `FundingCancelled` | `fund_can` | `cancel_funding` |
+| `FundingTargetUpdated` | `fund_tgt` | `update_funding_target` |
+| `FundingDeadlineExtended` | `fund_ext` | `extend_funding_deadline` |
 | `InvestorAllowlistChanged` | `al_set` | `set_investor_allowlisted`, `set_investors_allowlisted` |
 | `InvestorAllowlistBatchApplied` | `al_batch` | `set_investors_allowlisted` |
+| `InvestorPayoutClaimed` | `inv_claim` | `claim_investor_payout` |
+| `InvestorRefundedEvt` | `refunded` | `refund` |
+| `LegalHoldChanged` | `legalhld` | `set_legal_hold`, `clear_legal_hold` |
+| `LegalHoldClearCancelled` | `lh_cancel` | `cancel_clear_legal_hold` |
+| `LegalHoldClearDelayUpdated` | — | (dead code; never emitted) |
+| `LegalHoldClearRequested` | `lh_req` | `request_clear_legal_hold` |
+| `MaturityMaxHorizonUpdated` | `mtry_max` | `update_maturity_max_horizon` |
+| `MaturityUpdatedEvent` | `maturity` | `update_maturity` |
+| `MaxPerInvestorCapRaised` | `inv_cap` | `raise_max_per_investor` |
+| `MaxUniqueInvestorsCapLowered` | `inv_cap` | `lower_max_unique_investors` |
+| `MaxUniqueInvestorsCapRaised` | `raise_cap` | `raise_max_unique_investors` |
+| `MinContributionFloorLowered` | `floor_lo` | `lower_min_contribution_floor` |
+| `PrimaryAttestationBound` | `att_bind` | `bind_primary_attestation_hash` |
+| `RegistryRefRebound` | `reg_rebind` | `set_registry` |
+| `SmeWithdrew` | `sme_wd` | `withdraw` |
+| `TreasuryDustSwept` | `dust_sw` | `sweep_terminal_dust` |
 
 ## Complete Topic And Data Layout
 
@@ -166,7 +184,9 @@ Data:
 
 ### `AdminTransferredEvent`
 
-Emitted after successful `accept_admin`.
+Defined but not currently emitted. Use `AdminAcceptedEvent` (`adm_acc`) for
+incoming admin acceptances. This struct is retained for schema compatibility
+and may be removed in a future cleanup.
 
 Topics:
 
@@ -206,6 +226,25 @@ Data:
 | `current_admin` | `Address` |
 | `pending_admin` | `Address` |
 
+### `DeprecatedTransferAdminUsed`
+
+Emitted by the deprecated one-step `transfer_admin` shim. Pairs with
+`AdminProposedEvent` in the same transaction so indexers can flag legacy callers.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `deprecated_transfer_admin_used` |
+| 1 | `name` | `Symbol` | `depr_xfer` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+
+Data:
+
+| Field | Type |
+|---|---|
+| `proposed_address` | `Address` |
+
 ### `BeneficiaryRotated`
 
 Emitted after successful `rotate_beneficiary`.
@@ -224,6 +263,26 @@ Data:
 |---|---|
 | `prior_sme` | `Address` |
 | `new_sme` | `Address` |
+
+### `BenChange`
+
+Emitted after successful `rotate_beneficiary` as a dedicated <= 9 chars topic event.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `BenChange` |
+| 1 | `name` | `Symbol` | `ben_chg` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+
+Data:
+
+| Field | Type |
+|---|---|
+| `prior_sme` | `Address` |
+| `new_sme` | `Address` |
+| `amount` | `i128` |
 
 ### `FundingTargetUpdated`
 
@@ -374,6 +433,25 @@ Data:
 | `invoice_id` | `Symbol` |
 | `token` | `Address` |
 | `amount` | `i128` |
+
+### `FundingDeadlineExtended`
+
+Emitted after successful `extend_funding_deadline`.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `funding_deadline_extended` |
+| 1 | `name` | `Symbol` | `fund_ext` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+
+Data:
+
+| Field | Type |
+|---|---|
+| `old_deadline` | `u64` |
+| `new_deadline` | `u64` |
 
 ### `PrimaryAttestationBound`
 
@@ -552,3 +630,4 @@ Status values:
 | 2026-05-31 | v0.3 | Issue #272: replaced drifted reference with complete `#[contractevent]` topic and data layout from `escrow/src/lib.rs` |
 | 2026-06-24 | v0.4 | Added `settled_at_ledger_timestamp` field to `EscrowSettled` event; added `is_settleable` view |
 | 2026-06-26 | v0.5 | Issue #379: Added `InvestorAllowlistBatchApplied` (`al_batch`) event emitted once per `set_investors_allowlisted` call for indexer disambiguation |
+| 2026-06-29 | v0.6 | Added `DeprecatedTransferAdminUsed` (`depr_xfer`) for deprecated one-step admin transfer shim; renamed `EscrowInitialized.name` from `escrow` to `escrow_ii` to fix upstream collision; fixed duplicate `BeneficiaryRotated` struct; added missing event struct sections (`AdminAcceptedEvent`, `AdminProposalCancelled`, `CollateralClearedEvt`, `ContractUpgraded`, `EscrowPartialSettle`, `LegalHoldClearCancelled`, `LegalHoldClearRequested`, `MaturityMaxHorizonUpdated`, `MaxPerInvestorCapRaised`, `MaxUniqueInvestorsCapRaised`, `MinContributionFloorLowered`, `RegistryRefRebound`) |

@@ -20,11 +20,15 @@ forbidden regressions, and interaction rules between `withdraw` vs `settle` path
 ## State diagram
 
 ```text
+  unfund(investor, amount) [investor]
+  (partial or full; status stays 0)
+         │
+         ▼
                 ┌─────────────┐
                 │   (init)    │
-                │  status = 0 │
-                │    open      │
-                └──────┬──────┘
+                │  status = 0 │◄────┐
+                │    open      │     │
+                └──────┬──────┘─────┘
                        │
          ┌─────────────┼──────────────────────┐
          │             │                      │
@@ -76,6 +80,9 @@ reducing transaction overhead for primary issuance workflows.
 - Batch size must be `> 0` and `<= MAX_FUND_BATCH` (50 entries)
 - Empty batch panics with `EscrowError::FundingBatchEmpty`
 - Oversized batch panics with `EscrowError::FundingBatchTooLarge`
+- Every investor address must be unique within the batch; a repeated address panics with
+  `EscrowError::FundingBatchDuplicateInvestor` (code 84). The entire batch is rejected
+  atomically before any state mutation.
 
 **Funded-target snapshot:**
 - If any entry causes the escrow to transition to **funded** (status `0 → 1`),
@@ -122,6 +129,12 @@ let result = fund_batch(entries); // All three processed; status = 1
 | Over-funding across two entries; snapshot correct | `test_fund_batch_overfunding_across_two_entries_snapshot_correct` |
 | Per-investor `require_auth` recorded for each entry | `test_fund_batch_investor_auth_recorded_for_each_entry` |
 | Event count == entry count | `test_fund_batch_event_count_matches_entry_count` |
+| Adjacent duplicate → `FundingBatchDuplicateInvestor` (code 84) | `test_fund_batch_rejects_adjacent_duplicate` |
+| Non-adjacent duplicate → `FundingBatchDuplicateInvestor` (code 84) | `test_fund_batch_rejects_non_adjacent_duplicate` |
+| Single-element batch (no duplicates possible) succeeds | `test_fund_batch_single_element_succeeds` |
+| All-unique batch succeeds | `test_fund_batch_all_unique_succeeds` |
+| MAX_FUND_BATCH (50) unique entries succeed | `test_fund_batch_max_unique_batch_succeeds` |
+| Duplicate batch leaves no partial state | `test_fund_batch_duplicate_leaves_no_partial_state` |
 
 ---
 
@@ -131,6 +144,7 @@ let result = fund_batch(entries); // All three processed; status = 1
 |------|----|---------|--------------|
 | `0` (open) | `1` (funded) | `fund()`, `fund_with_commitment()`, or `fund_batch()` when `funded_amount >= funding_target` | Investor auth (per-investor for batch) |
 | `0` (open) | `4` (cancelled) | `cancel_funding()` | Admin auth; legal hold must be inactive |
+| `0` (open) | `0` (open) | `unfund(investor, amount)` | Investor auth; legal hold must be inactive | Partial unfund: `funded_amount` decreases, status stays 0. Full unfund (contribution → 0): `UniqueFunderCount` decrements, status stays 0 |
 | `1` (funded) | `2` (settled) | `settle()` | SME auth; legal hold must be inactive; if `maturity > 0`, ledger timestamp must be >= maturity |
 | `1` (funded) | `3` (withdrawn) | `withdraw()` | SME auth; legal hold must be inactive |
 
@@ -197,6 +211,38 @@ their principal:
 
 ---
 
+## Investor unfund path (status 0 — open)
+
+While an escrow is open, investors may reduce or fully exit their principal position
+without requiring admin cancellation:
+
+1. Investor calls `unfund(investor, amount)` — decrements `DataKey::InvestorContribution`
+   and `InvoiceEscrow::funded_amount` by `amount`.
+2. If contribution reaches zero: `DataKey::InvestorContribution` entry is zeroed,
+   `DataKey::UniqueFunderCount` is decremented (floor: 0).
+3. Status remains 0 (open) in all cases — `unfund` never transitions status.
+4. Tokens are returned to the investor via `external_calls::transfer_funding_token_with_balance_checks`
+   (SEP-41 balance-delta invariants enforced).
+5. `EscrowUnfunded` is emitted with the investor, amount, remaining contribution,
+   new `funded_amount`, and ledger timestamp.
+
+### Invariants
+
+- Investor can only unfund their own contribution; no third-party unfunding.
+- `unfund` is blocked while a legal hold is active (`UnfundLegalHoldActive`, code 222).
+- `unfund` is blocked in any state other than open (0) (`UnfundEscrowNotOpen`, code 220).
+- `amount` must be ≤ `DataKey::InvestorContribution[investor]` (`OverWithdrawal`, code 221).
+- `funded_amount` never goes negative (checked arithmetic).
+- `UniqueFunderCount` never goes negative (saturating_sub).
+
+### Events emitted
+
+| Event | When |
+|-------|------|
+| `EscrowUnfunded` | `unfund()` succeeds |
+
+---
+
 ## SME auth vs admin role
 
 | Function | Role |
@@ -221,12 +267,13 @@ Legal hold blocks all risk-bearing operations regardless of status:
 
 | Function | Blocked by legal hold |
 |----------|----------------------|
+| `cancel_funding()` | Yes |
+| `claim_investor_payout()` | Yes |
 | `fund()` | Yes |
 | `settle()` | Yes |
-| `withdraw()` | Yes |
-| `claim_investor_payout()` | Yes |
-| `cancel_funding()` | Yes |
 | `sweep_terminal_dust()` | Yes |
+| `unfund()` | Yes |
+| `withdraw()` | Yes |
 
 Once legal hold is cleared, normal state transitions resume.
 
@@ -242,26 +289,25 @@ When `maturity > 0`:
 
 ## Funding deadline update
 
-`update_funding_deadline(new_deadline: Option<u64>)` allows the admin to set, extend, or clear
-the optional funding deadline while the escrow is **open** (status == 0):
+`extend_funding_deadline(new_deadline: u64)` allows the admin to **push the funding deadline forward**
+while the escrow is **open** (status == 0). Shortening or clearing the deadline is not supported by
+this entrypoint.
 
-| Status | `update_funding_deadline` result |
+| Status | `extend_funding_deadline` result |
 |--------|----------------------------------|
-| 0 — Open | ✅ Allowed |
-| 1 — Funded | ❌ Panics: "Funding deadline can only be updated in Open state" |
-| 2 — Settled | ❌ Panics: "Funding deadline can only be updated in Open state" |
-| 3 — Withdrawn | ❌ Panics: "Funding deadline can only be updated in Open state" |
-| 4 — Cancelled | ❌ Panics: "Funding deadline can only be updated in Open state" |
+| 0 — Open | ✅ Allowed when `new_deadline > current` and `< maturity` (when maturity configured) |
+| 1 — Funded | ❌ `FundingDeadlineUpdateNotOpen` |
+| 2 — Settled | ❌ `FundingDeadlineUpdateNotOpen` |
+| 3 — Withdrawn | ❌ `FundingDeadlineUpdateNotOpen` |
+| 4 — Cancelled | ❌ `FundingDeadlineUpdateNotOpen` |
 
 **Validation rules:**
-- `Some(d)`: `d` must be strictly greater than the current ledger timestamp (same rule as `init`).
-- `None`: removes the deadline entirely; funding becomes unrestricted by time.
-- `is_funding_expired()` returns `false` when no deadline is set (key absent from storage).
+- A funding deadline must already be configured (`FundingDeadlineNotSet` otherwise).
+- `new_deadline` must be strictly greater than the stored deadline (`FundingDeadlineNotExtended`).
+- When `maturity > 0`, `new_deadline` must be strictly less than maturity (`FundingDeadlineBeyondMaturity`).
 
-**Events:** `FundingDeadlineUpdated` carries `invoice_id`, `prior_deadline`, and `new_deadline`.
+**Events:** `FundingDeadlineExtended` carries `invoice_id`, `old_deadline`, and `new_deadline`.
 
-This is consistent with `update_funding_target` and `update_maturity`: all three are admin-gated,
-open-state-only setters that emit a typed event with the prior and new values.
 
 ---
 

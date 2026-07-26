@@ -157,16 +157,20 @@ liquifact-contracts/
 | `init` | Admin (implicit) | Create an invoice escrow (invoice id, SME, amount, yield bps, maturity). |
 | `fund` | Investor | Record investor principal and atomically pull the funding token from the investor; marks escrow funded when target is met. |
 | `fund_with_commitment` | Investor | First deposit with optional lock period (atomically pulling the funding token); selects tiered yield. |
+| `fund_batch` | Investor | Batch-record up to `MAX_FUND_BATCH` investor contributions in a single call. Rejects the entire batch atomically on any duplicate investor address (`FundingBatchDuplicateInvestor`, code 84), non-positive amount, or other per-entry invariant violation. |
 | `settle` | SME | Mark a funded escrow as settled (SME auth required; maturity enforced). |
 | `partial_settle` | SME | SME marks a portion of the escrow as settled before full settlement. |
 | `withdraw` | SME | SME pulls funded liquidity (accounting record). |
 | `cancel_funding` | Admin | Admin cancels an open escrow (transitions status 0 → 4). |
 | `refund` | Investor | Investor pulls contributed liquidity from a cancelled escrow. Increments `DistributedPrincipal` liability. |
+| `extend_funding_deadline` | Admin | Extend-only push of the funding deadline while the escrow is open. |
 | `claim_investor_payout` | Investor | Investor records a payout claim after settlement. |
 | `claim_payouts_batch` | Investor / Any | Batch-record payout claims for up to `MAX_CLAIM_BATCH` investors in one transaction. |
 | `sweep_terminal_dust` | Treasury | Treasury sweeps rounding residue from a terminal escrow. |
 | `migrate` | Admin | Schema version gate — **typed errors on all paths** in the current release (codes 90–92). |
 | `set_legal_hold` | Admin | Admin activates/clears compliance hold. |
+| `set_paused` | Admin | Admin toggles a lightweight operational pause (incident response) that blocks `fund`, `settle`, `withdraw`, and `claim_investor_payout`. Orthogonal to legal hold; single-call toggle with no clear delay. |
+| `is_paused` | — | Read the current operational pause flag (defaults to `false`). |
 | `set_allowlist_active` | Admin | Admin enables/disables the investor allowlist gate. |
 | `set_investor_allowlisted` | Admin | Admin sets per-address allowlist status. |
 | `set_investors_allowlisted` | Admin | Admin batch-sets allowlist status for multiple addresses. |
@@ -181,6 +185,54 @@ liquifact-contracts/
 | `get_escrow` | — | Read current escrow state. |
 | `get_version` | — | Read stored `DataKey::Version`. |
 | `get_remaining_investor_slots` | — | Read remaining unique investor capacity before reaching the cap. |
+| `get_reconciliation` | — | Read solvency position: live token balance, outstanding liability, and surplus/deficit. See [`docs/escrow-read-api.md`](docs/escrow-read-api.md). |
+
+| `rebind_registry_ref` | Admin | Set or update the off-chain registry hint (`DataKey::RegistryRef`). Emits `RegistryRefRebound`. |
+| `clear_registry_ref` | Admin | Convenience alias for `rebind_registry_ref(None)`. Clears the registry pointer. |
+| `get_registry_ref` | — | Return the current registry hint, or `None` when unbound. |
+
+---
+
+## Off-chain registry-reference pointer
+
+The escrow stores an optional `Option<Address>` under `DataKey::RegistryRef` as a
+**discoverability hint** for off-chain indexers. It is set at `init` (optional) and
+can be updated or cleared at any time by the admin via `rebind_registry_ref` /
+`clear_registry_ref`.
+
+### Non-authority guarantee
+
+**The registry pointer confers no control over on-chain funds, settlement, or
+authorization.** No entrypoint that moves tokens or changes escrow status reads
+`DataKey::RegistryRef`. Integrators must not treat its presence as proof of registry
+membership or as a security boundary.
+
+### Pointer states
+
+| State | `get_registry_ref` returns | Meaning |
+|-------|---------------------------|---------|
+| Unbound | `None` | No off-chain registry is associated with this escrow. |
+| Bound | `Some(addr)` | `addr` is a hint to an off-chain registry contract. Verify membership directly with that contract if authoritative state is needed. |
+
+### Mutation path
+
+Only the current escrow admin may call `rebind_registry_ref` or `clear_registry_ref`.
+Each call emits a `RegistryRefRebound` event (topic: `reg_rebind`) carrying the new
+`Option<Address>` value. Off-chain indexers should subscribe to this event to re-sync
+their cached pointer without polling.
+
+### Lifecycle summary
+
+1. **Init (optional bind):** `init` accepts an optional `registry: Option<Address>`.
+   Passing `Some(addr)` stores the hint immediately; `None` leaves the pointer unset.
+2. **Rebind:** Admin calls `rebind_registry_ref(Some(new_addr))` to change the hint.
+   The `RegistryRefRebound` event fires with the new address.
+3. **Clear:** Admin calls `clear_registry_ref()` (or `rebind_registry_ref(None)`) to
+   delete the key. The `RegistryRefRebound` event fires with `registry = None`.
+
+See [`docs/escrow-registry-ref.md`](docs/escrow-registry-ref.md) for the full lifecycle
+specification and integrator guidance, and [`docs/escrow-events.md`](docs/escrow-events.md)
+for the `RegistryRefRebound` event schema.
 
 ---
 
@@ -284,6 +336,11 @@ The escrow supports cancellation by the admin under specific criteria, unlocking
 - **Legal hold:** governance-controlled; misuse risk is mitigated by using a
   multisig `admin` and operational policy (see
   [`docs/OPERATOR_RUNBOOK.md`](docs/OPERATOR_RUNBOOK.md)).
+- **Operational pause:** admin-only `set_paused` is a lightweight incident-response
+  circuit breaker, **orthogonal to legal hold** — no compliance semantics and no
+  clear delay. It gates `fund`, `settle`, `withdraw`, and `claim_investor_payout`
+  as a read-only precondition before `require_auth` (typed errors 201–204). Either
+  flag blocks independently; clearing one never clears the other.
 - **Collateral record:** SME-reported metadata only; not proof of custody,
   token movement, reserved balance, or an enforceable on-chain claim.
 - **Token integration:** fee-on-transfer, rebasing, and hook tokens are

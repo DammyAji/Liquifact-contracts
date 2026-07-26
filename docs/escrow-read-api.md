@@ -23,6 +23,8 @@ re-implementing storage reads to guarantee identical semantics.
 
 **Admin & Governance:**
 - [get_pending_admin](#get_pending_admin--optionaddress)
+- [get_pending_admin_expiry](#get_pending_admin_expiry--optionu64)
+- [get_pending_admin_remaining_secs](#get_pending_admin_remaining_secs--optionu64)
 - [get_legal_hold](#get_legal_hold--bool)
 - [get_legal_hold_clear_delay](#get_legal_hold_clear_delay--u64)
 - [get_legal_hold_clearable_at](#get_legal_hold_clearable_at--optionu64)
@@ -51,10 +53,12 @@ re-implementing storage reads to guarantee identical semantics.
 - [is_investor_refunded](#is_investor_refundedinvestor-address--bool)
 - [compute_investor_payout](#compute_investor_payoutinvestor-address--i128)
 - [get_claimable_payout](#get_claimable_payoutinvestor-address--i128)
+- [get_settlement_pool](#get_settlement_pool--i128)
 
 **Attestations:**
 - [get_primary_attestation_hash](#get_primary_attestation_hash--optionbytesn32)
 - [get_attestation_append_log](#get_attestation_append_log--vecbytesn32)
+- [get_attestation_log_stats](#get_attestation_log_stats--u32-u32)
 - [is_attestation_revoked](#is_attestation_revokedindex-u32--bool)
 
 **Collateral Metadata:**
@@ -66,6 +70,7 @@ re-implementing storage reads to guarantee identical semantics.
 
 **Distributed Principal:**
 - [get_distributed_principal](#get_distributed_principal--i128)
+- [get_reconciliation](#get_reconciliation--reconciliationview)
 
 ---
 
@@ -195,6 +200,44 @@ Returns the proposed successor admin waiting for `accept_admin`, or `None` when 
 **Return value:**
 - `Some(Address)` when a handover is pending.
 - `None` when no `propose_admin` has been issued, or after a successful `accept_admin`.
+
+### `get_pending_admin_expiry() → Option<u64>`
+
+**Storage key:** `DataKey::PendingAdminExpiry`
+
+**Signature:** `pub fn get_pending_admin_expiry(env: Env) -> Option<u64>`
+
+Returns the absolute ledger timestamp recorded by `propose_admin`, or `None` when no expiry has been recorded.
+
+**Requires initialization:** No
+
+**Default when absent:** `None`
+
+**Return value:**
+- `Some(timestamp)` when a handover proposal with an expiry exists.
+- `None` before `propose_admin`, after `accept_admin`, after `cancel_pending_admin`, or when no expiry key is present.
+
+### `get_pending_admin_remaining_secs() → Option<u64>`
+
+**Storage keys:** `DataKey::PendingAdmin`, `DataKey::PendingAdminExpiry`
+
+**Signature:** `pub fn get_pending_admin_remaining_secs(env: Env) -> Option<u64>`
+
+Returns the pending-admin proposal's remaining validity window computed against `Env::ledger().timestamp()`.
+
+**Requires initialization:** No
+
+**Default when absent:** `None`
+
+**Return value:**
+- `None` when no pending admin proposal is active.
+- `Some(expiry - now)` while `now < expiry`.
+- `Some(0)` when `now >= expiry`, using saturating arithmetic.
+
+**Boundary parity with `accept_admin`:**
+- At `now == expiry`, this view returns `Some(0)` and `accept_admin` still accepts the proposal.
+- At `now > expiry`, this view still returns `Some(0)` and `accept_admin` rejects with `AdminProposalExpired`.
+- Pure read: no authorization, no storage writes, no TTL bump.
 
 ---
 
@@ -523,6 +566,22 @@ Returns the cumulative principal contributed by `investor` in token base units.
 
 ---
 
+### `get_contributions(investors: Vec<Address>) → Vec<i128>`
+
+**Storage key:** `DataKey::InvestorContribution(investor)` (persistent, one read per input)
+**Signature:** `pub fn get_contributions(env: Env, investors: Vec<Address>) -> Vec<i128>`
+
+Returns one contribution amount per supplied address, preserving input order. Unknown addresses
+return `0`, matching `get_contribution`.
+
+**Requires initialization:** No
+**Default when absent:** `0` per address
+**Batch bound:** `investors.len() <= MAX_INVESTOR_READ_BATCH` (50)
+**Error:** `EscrowError::ContributionReadBatchTooLarge` when the input exceeds the bound
+**Security note:** Pure read-only; performs no authorization, storage writes, or TTL extension.
+
+---
+
 ### `get_unique_funder_count() → u32`
 
 **Storage key:** `DataKey::UniqueFunderCount`  
@@ -595,6 +654,47 @@ and [`LiquifactEscrow::withdraw`] for liability-floor enforcement.
 
 ---
 
+## `get_reconciliation() → ReconciliationView`
+
+**Storage keys:** reads `DataKey::Escrow`, `DataKey::DistributedPrincipal`, and
+`DataKey::FundingToken` (then queries the token contract for the live balance).
+
+Returns the contract's full reconciliation position in a single call, so operators
+no longer have to fetch the balance, funded amount, distributed principal, and
+settlement state separately and re-implement the liability arithmetic off-chain
+(see the [Reconciliation relationship](#reconciliation-relationship) above).
+
+```text
+outstanding_liability = max(funded_amount - distributed_principal, 0)
+surplus               = token_balance - outstanding_liability
+```
+
+`outstanding_liability` uses the **identical floor** that
+[`LiquifactEscrow::sweep_terminal_dust`] enforces, so the view and the sweep guard
+can never disagree. `surplus` is the sweepable dust when positive and a deficit
+when negative.
+
+### `ReconciliationView` fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `token_balance` | `i128` | Live SEP-41 funding-token balance held by the contract. |
+| `outstanding_liability` | `i128` | Principal still owed to investors: `max(funded_amount - distributed_principal, 0)`. |
+| `surplus` | `i128` | `token_balance - outstanding_liability`. Positive = sweepable surplus; negative = deficit. |
+
+- **Pure read** — no authorization required, no state mutation.
+- **Never panics on values** — all arithmetic is saturating.
+- Emits [`EscrowError::EscrowNotInitialized`] / [`EscrowError::FundingTokenNotSet`]
+  only when the escrow has not been initialized.
+
+**Security note:** in settled (`2`) and withdrawn (`3`) states `distributed_principal`
+is `0` by design, so `outstanding_liability` reflects the full `funded_amount` and the
+reported `surplus` is never larger than what `sweep_terminal_dust` would actually
+permit (that guard only applies the floor in the cancelled state `4`). The view is
+therefore conservative and can never over-report sweepable funds.
+
+---
+
 ### `is_investor_claimed(investor: Address) → bool`
 
 **Storage key:** `DataKey::InvestorClaimed(investor)` (persistent)  
@@ -630,6 +730,55 @@ Returns `true` when an investor's principal has been returned via `refund` in a 
 
 - `None` — Escrow is not yet funded; no close snapshot exists.
 - `Some(FundingCloseSnapshot)` — The pro-rata denominator snapshot captured when the escrow first transitioned to **funded**.
+
+---
+
+### `get_settlement_pool() → i128`
+
+**Storage keys:** `DataKey::FundingCloseSnapshot`, `DataKey::Escrow`  
+**Signature:** `pub fn get_settlement_pool(env: Env) -> i128`
+
+Returns the **total settlement pool** owed by the SME — the aggregate principal plus base-yield
+coupon the SME must repay to fully satisfy all investors. Avoids rounding divergence that arises
+when off-chain tooling re-derives the formula from raw snapshot fields.
+
+#### Formula (floor / truncating integer division)
+
+```text
+coupon       = total_principal × yield_bps / 10_000  (floor)
+settle_pool  = total_principal + coupon
+```
+
+Where `total_principal` is from `DataKey::FundingCloseSnapshot` and `yield_bps` is the
+escrow base yield from `InvoiceEscrow::yield_bps`.
+
+#### Yield note
+
+Uses the escrow **base yield** only. Per-investor effective yields from `fund_with_commitment`
+tier selection are reflected individually in `compute_investor_payout` but are **not** aggregated
+here.
+
+#### Return values
+
+| Condition | Returns |
+|-----------|---------|
+| `DataKey::FundingCloseSnapshot` absent (escrow not yet funded) | `0` |
+| `total_principal <= 0` (degenerate snapshot) | `0` |
+| Normal funded state | `total_principal + floor(total_principal × yield_bps / 10_000)` |
+
+#### Overflow safety
+
+All multiplications use `i128::checked_mul`; all divisions use `i128::checked_div`. Emits
+`EscrowError::ComputePayoutArithmeticOverflow` (code 129) on overflow.
+
+#### Rounding invariant
+
+Sum of all per-investor `compute_investor_payout` values is guaranteed ≤ `get_settlement_pool()`.
+Any fractional residue is swept by `sweep_terminal_dust`.
+
+#### Authorization
+
+None — pure read; no auth required and no state mutation.
 
 ---
 
