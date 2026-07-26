@@ -17,8 +17,6 @@ use storage::{
 use types::{EscrowStatus, InvoiceEscrow, SmeCollateralCommitment};
 
 pub const SCHEMA_VERSION: u32 = 6;
-<<<<<<< HEAD
-=======
 // See the schema version contract documentation: [Escrow schema versioning](../docs/escrow-schema-versioning.md)
 
 /// Upper bound on [`LiquifactEscrow::append_attestation_digest`] entries to keep storage bounded.
@@ -1466,7 +1464,6 @@ pub struct ContractUpgraded {
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
->>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
 
 #[contract]
 pub struct LiquifactEscrow;
@@ -1490,8 +1487,6 @@ impl LiquifactEscrow {
         set_admin(&env, &admin);
 
         let escrow = InvoiceEscrow {
-<<<<<<< HEAD
-=======
             invoice_id: invoice_sym.clone(),
             admin: admin.clone(),
             sme_address: sme_address.clone(),
@@ -4738,7 +4733,6 @@ impl LiquifactEscrow {
         Self::propose_admin(env.clone(), new_admin.clone(), None);
         DeprecatedTransferAdminUsed {
             name: symbol_short!("depr_xfer"),
->>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
             invoice_id,
             sme,
             funding_token,
