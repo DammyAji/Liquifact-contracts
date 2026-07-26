@@ -1048,3 +1048,174 @@ fn pause_toggle_rate_limit_disabled_by_default_matches_legacy_behavior() {
     }
     assert!(!client.is_paused());
 }
+
+// ── 21. Pause arithmetic overflow/saturation safety (issue #823) ──────────────
+//
+// The pause subsystem has exactly three raw arithmetic operations (no subtraction is
+// performed anywhere in this module — only two additions and a comparison):
+//   1. `paused_at.checked_add(max_duration)`         in `paused_active`      — already checked.
+//   2. `start.saturating_add(window_secs)`            in `set_paused`         — already saturating.
+//   3. `window_count + 1` (now `window_count.saturating_add(1)`) in `set_paused`.
+//
+// (3) was hardened defensively: the preceding `ensure(window_count < toggle_limit, ...)`
+// already made overflow mathematically unreachable (`window_count < toggle_limit <= u32::MAX`
+// implies `window_count + 1 <= u32::MAX`), but the guard now holds by construction instead of
+// by relying on that check never being reordered. The tests below exercise all three at their
+// extreme `u64`/`u32` boundaries and assert typed-error rejection (never a wrapped/panicking
+// wraparound) wherever rejection is the correct outcome.
+
+#[test]
+fn pause_expiry_checked_add_exact_boundary_no_overflow() {
+    // Boundary case for `paused_at.checked_add(max_duration)`: choose `paused_at` so the sum
+    // lands exactly on `u64::MAX` (no overflow). Confirms `checked_add` resolves the correct
+    // expiry timestamp right up to the edge of the representable range instead of failing safe
+    // prematurely.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    init_open(&client, &env, &admin, &sme, "PAU058");
+
+    client.set_pause_max_duration(&MAX_PAUSE_MAX_DURATION_SECS);
+    let paused_at = u64::MAX - MAX_PAUSE_MAX_DURATION_SECS;
+    env.ledger().set_timestamp(paused_at);
+    client.set_paused(&true);
+    assert!(client.is_paused());
+
+    // One second before the exact-boundary expiry: still blocked.
+    env.ledger().set_timestamp(u64::MAX - 1);
+    assert!(client.is_paused());
+    assert_contract_error(
+        client.try_fund(&investor, &TARGET),
+        EscrowError::PausedBlocksFunding,
+    );
+
+    // Exactly at the boundary (paused_at + max_duration == u64::MAX): expired.
+    env.ledger().set_timestamp(u64::MAX);
+    assert!(!client.is_paused());
+    let escrow = client.fund(&investor, &TARGET);
+    assert_eq!(escrow.status, 1);
+}
+
+#[test]
+fn pause_expiry_checked_add_overflow_fails_safe_stays_paused() {
+    // When `paused_at + max_duration` would overflow `u64`, `checked_add` returns `None` and
+    // `paused_active` fails safe by treating the pause as still active. It must never wrap
+    // around to a small timestamp and falsely report "expired".
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    init_open(&client, &env, &admin, &sme, "PAU059");
+
+    client.set_pause_max_duration(&MAX_PAUSE_MAX_DURATION_SECS);
+    // paused_at + MAX_PAUSE_MAX_DURATION_SECS overflows u64::MAX by construction.
+    let paused_at = u64::MAX - 100;
+    env.ledger().set_timestamp(paused_at);
+    client.set_paused(&true);
+    assert!(client.is_paused());
+
+    // Advance to the maximum representable ledger timestamp: still paused, no wraparound.
+    env.ledger().set_timestamp(u64::MAX);
+    assert!(client.is_paused());
+    assert_contract_error(
+        client.try_fund(&investor, &TARGET),
+        EscrowError::PausedBlocksFunding,
+    );
+}
+
+#[test]
+fn pause_rate_limit_window_saturating_add_no_wraparound_at_extreme_start() {
+    // Boundary case for `start.saturating_add(window_secs)`: when `start` is close to
+    // `u64::MAX`, the sum must saturate instead of wrapping. A wraparound bug would make the
+    // window appear to have already elapsed (a small wrapped timestamp <= now), incorrectly
+    // resetting the toggle count and bypassing the rate limit.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "PAU060");
+
+    client.set_pause_rate_limit(&1u32, &MAX_PAUSE_TOGGLE_WINDOW_SECS);
+    let start = u64::MAX - 100;
+    env.ledger().set_timestamp(start);
+    client.set_paused(&true);
+
+    // Still within the (saturated) window at the same timestamp: rejected, not bypassed.
+    assert_contract_error(
+        client.try_set_paused(&false),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
+
+    // One tick before the saturated ceiling: still rejected (no early/wrapped elapse).
+    env.ledger().set_timestamp(u64::MAX - 1);
+    assert_contract_error(
+        client.try_set_paused(&false),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
+
+    // At the saturated ceiling (u64::MAX): the window is correctly treated as elapsed.
+    env.ledger().set_timestamp(u64::MAX);
+    client.set_paused(&false);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn pause_toggle_rate_limit_reaches_configured_maximum_without_overflow() {
+    // Exercises `window_count` incrementing up to the maximum configurable toggle limit
+    // (MAX_PAUSE_TOGGLE_LIMIT = 1000) within a single window entirely through the public API,
+    // proving the counter never panics as it approaches its bound and that the guard correctly
+    // rejects the call that would exceed it.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "PAU061");
+
+    client.set_pause_rate_limit(&MAX_PAUSE_TOGGLE_LIMIT, &MAX_PAUSE_TOGGLE_WINDOW_SECS);
+
+    for i in 0..MAX_PAUSE_TOGGLE_LIMIT {
+        client.set_paused(&(i % 2 == 0));
+    }
+
+    // window_count has reached MAX_PAUSE_TOGGLE_LIMIT without overflowing; the next toggle
+    // within the same window must be rejected with the typed error, not a panic.
+    assert_contract_error(
+        client.try_set_paused(&true),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
+}
+
+#[test]
+fn pause_toggle_count_increment_never_overflows_at_forced_extreme_storage_values() {
+    // Adversarial boundary case for the `window_count` increment itself: force
+    // `PauseToggleCountInWindow` and `PauseToggleLimit` to values at the very edge of `u32`
+    // directly in storage (bypassing the setter's MAX_PAUSE_TOGGLE_LIMIT bound) to prove the
+    // increment cannot panic even in a scenario more extreme than the public API can ever
+    // produce.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    init_open(&client, &env, &admin, &sme, "PAU062");
+
+    let now = env.ledger().timestamp();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleLimit, &u32::MAX);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleWindowSecs, &3_600u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleWindowStart, &now);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleCountInWindow, &(u32::MAX - 1));
+    });
+
+    // window_count (u32::MAX - 1) < toggle_limit (u32::MAX): allowed. The increment computes
+    // `u32::MAX` via `saturating_add`, never an overflowing `+`.
+    client.set_paused(&true);
+
+    // window_count is now u32::MAX; the next call within the window is correctly rejected by
+    // the `<` guard rather than ever re-attempting an overflowing increment.
+    assert_contract_error(
+        client.try_set_paused(&false),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
+}

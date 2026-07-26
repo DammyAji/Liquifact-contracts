@@ -3287,9 +3287,14 @@ impl LiquifactEscrow {
             env.storage()
                 .instance()
                 .set(&DataKey::PauseToggleWindowStart, &window_start);
-            env.storage()
-                .instance()
-                .set(&DataKey::PauseToggleCountInWindow, &(window_count + 1));
+            // Defensive hardening: `window_count < toggle_limit` is asserted above, and
+            // `toggle_limit <= u32::MAX`, so `window_count + 1` cannot overflow today. Use
+            // `saturating_add` anyway so this line stays safe by construction rather than by
+            // relying on the guard above never being reordered (see #823 pause-arithmetic audit).
+            env.storage().instance().set(
+                &DataKey::PauseToggleCountInWindow,
+                &window_count.saturating_add(1),
+            );
         }
 
         PausedChanged {
