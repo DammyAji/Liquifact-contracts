@@ -227,7 +227,7 @@ fn settle_succeeds_after_unpause() {
     client.set_paused(&true);
     client.set_paused(&false);
     let escrow = client.settle();
-    assert_eq!(escrow.status, 2);
+    assert_eq!(escrow.escrow.status, 2);
 }
 
 // ── 5. withdraw ──────────────────────────────────────────────────────────────

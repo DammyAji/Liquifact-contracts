@@ -70,7 +70,7 @@ fn test_fund_and_settle() {
 
     let settled = client.settle();
 
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 #[test]

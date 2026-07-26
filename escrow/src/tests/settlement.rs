@@ -22,7 +22,8 @@ use super::{
     install_stellar_asset_token, setup, StellarTestToken, MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
 use crate::{
-    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementReadiness, YieldTier,
+    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementReadiness,
+    SettlementResult, YieldTier,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
@@ -592,7 +593,7 @@ fn test_cost_baseline_settle() {
     client.fund(&investor, &TARGET);
     env.ledger().set_timestamp(50_001);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// `settle` called twice must panic on the second call.
@@ -653,8 +654,8 @@ fn settle_with_maturity_zero_succeeds_immediately() {
 
     env.ledger().with_mut(|l| l.timestamp = 1);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
-    assert_eq!(settled.maturity, 0);
+    assert_eq!(settled.escrow.status, 2);
+    assert_eq!(settled.escrow.maturity, 0);
 }
 
 /// `settle` with `maturity > 0` must trap one second before the configured
@@ -757,8 +758,8 @@ fn settle_at_maturity_succeeds() {
     fund_to_target(&client, &env);
     env.ledger().with_mut(|l| l.timestamp = maturity);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
-    assert_eq!(settled.maturity, maturity);
+    assert_eq!(settled.escrow.status, 2);
+    assert_eq!(settled.escrow.maturity, maturity);
 }
 
 /// `settle` must panic if SME auth is not provided.
@@ -2128,7 +2129,7 @@ fn test_settlement_readiness_funded_ready_predicts_settle() {
 
     // Parity: ready_now == true ⇒ settle succeeds on the current ledger.
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// Funded but on legal hold: `legal_hold_active` true and `ready_now` false even
@@ -2215,7 +2216,7 @@ fn test_settlement_readiness_maturity_gate_parity() {
     assert!(at.is_settleable);
     assert!(at.ready_now);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 // ── get_settlement_readiness field-by-field parity with source predicates ──
@@ -2781,4 +2782,345 @@ fn test_settle_pool_no_maturity() {
     assert_eq!(escrow.yield_bps, yield_bps);
     assert_eq!(escrow.maturity, 0u64);
     assert_eq!(escrow.status, 2, "Escrow must be in settled state");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SettlementResult struct — typed return from settle()
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `settle()` must return a `SettlementResult` with the correct `coupon`, `settle_pool`,
+/// `settled_at`, and the post-settlement `escrow` snapshot.
+#[test]
+fn settlement_result_fields_match_computed_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let yield_bps = 800i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_001"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    // coupon = 100_000_000_000 × 800 / 10_000 = 8_000_000_000
+    let expected_coupon = 8_000_000_000i128;
+    // settle_pool = 100_000_000_000 + 8_000_000_000 = 108_000_000_000
+    let expected_settle_pool = TARGET + expected_coupon;
+
+    assert_eq!(result.coupon, expected_coupon, "coupon mismatch");
+    assert_eq!(
+        result.settle_pool, expected_settle_pool,
+        "settle_pool mismatch"
+    );
+    assert_eq!(result.settled_at, 1u64, "settled_at must match ledger time");
+    assert_eq!(result.escrow.status, 2, "escrow must be settled");
+    assert_eq!(
+        result.escrow.funded_amount, TARGET,
+        "funded_amount preserved in escrow snapshot"
+    );
+    assert_eq!(
+        result.escrow.yield_bps, yield_bps,
+        "yield_bps preserved in escrow snapshot"
+    );
+}
+
+/// `settle()` with `yield_bps == 0` must return `coupon == 0` and `settle_pool == funded_amount`.
+#[test]
+fn settlement_result_zero_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_002"),
+        &sme,
+        &TARGET,
+        &0i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    assert_eq!(result.coupon, 0i128, "coupon must be 0 when yield_bps == 0");
+    assert_eq!(
+        result.settle_pool, TARGET,
+        "settle_pool must equal funded_amount when yield_bps == 0"
+    );
+    assert_eq!(result.settled_at, 1u64);
+}
+
+/// `settle()` must record the correct `settled_at` timestamp matching the ledger.
+#[test]
+fn settlement_result_settled_at_matches_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let maturity = 100u64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_003"),
+        &sme,
+        &TARGET,
+        &500i64,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    let timestamp = maturity + 1;
+    env.ledger().with_mut(|l| l.timestamp = timestamp);
+
+    let result = client.settle();
+
+    assert_eq!(
+        result.settled_at, timestamp,
+        "settled_at must equal the ledger timestamp at settlement"
+    );
+    // Cross-check with get_settled_at view
+    assert_eq!(
+        client.get_settled_at(),
+        Some(timestamp),
+        "get_settled_at must match result.settled_at"
+    );
+}
+
+/// `SettlementResult.coupon` + `funded_amount` must equal `settle_pool` (invariant).
+#[test]
+fn settlement_result_coupon_plus_funded_equals_pool() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let yield_bps = 1234i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_004"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    assert_eq!(
+        result.coupon + result.escrow.funded_amount,
+        result.settle_pool,
+        "coupon + funded_amount must equal settle_pool"
+    );
+}
+
+/// `SettlementResult.settle_pool` must match `get_settlement_pool()`.
+#[test]
+fn settlement_result_pool_matches_get_settlement_pool() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_005"),
+        &sme,
+        &TARGET,
+        &750i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+    let pool_view = client.get_settlement_pool();
+
+    assert_eq!(
+        result.settle_pool, pool_view,
+        "SettlementResult.settle_pool must match get_settlement_pool()"
+    );
+}
+
+/// `SettlementResult.escrow` snapshot must have status == 2 and correct maturity.
+#[test]
+fn settlement_result_escrow_snapshot_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let maturity = 999u64;
+    let yield_bps = 250i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_006"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = maturity);
+
+    let result = client.settle();
+
+    assert_eq!(result.escrow.status, 2);
+    assert_eq!(result.escrow.maturity, maturity);
+    assert_eq!(result.escrow.yield_bps, yield_bps);
+    assert_eq!(result.escrow.funded_amount, TARGET);
+}
+
+/// Edge case: large principal with high yield must not overflow in SettlementResult.
+#[test]
+fn settlement_result_large_values_no_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let principal: i128 = 2_000_000_000;
+    let yield_bps = 750i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_007"),
+        &sme,
+        &principal,
+        &yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let investor = Address::generate(&env);
+    client.fund(&investor, &principal);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    // coupon = 2_000_000_000 × 750 / 10_000 = 150_000_000
+    assert_eq!(result.coupon, 150_000_000i128);
+    assert_eq!(result.settle_pool, 2_150_000_000i128);
+    assert_eq!(result.escrow.funded_amount, principal);
 }
