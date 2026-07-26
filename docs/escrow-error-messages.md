@@ -152,6 +152,7 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 203 | `FundingDeadlineNotExtended` | `extend_funding_deadline` | `new_deadline <= current` | Pass a strictly later deadline | typed |
 | 204 | `FundingDeadlineBeyondMaturity` | `init`, `extend_funding_deadline` | deadline at or beyond maturity | Keep deadline before maturity | typed |
 | 205 | `FundingDeadlineNotSet` | `extend_funding_deadline` | no deadline configured | Set deadline at init first | typed |
+| 223 | `StorageLimitOutOfRange` | `set_storage_limit` | `limit` outside `MIN_STORAGE_LIMIT_LEDGERS..=MAX_STORAGE_LIMIT_LEDGERS` | Pass a ledger count within the documented bounds | typed |
 
 ### Legacy panic strings (migration aid)
 
@@ -247,6 +248,7 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 162 | `New SME address must differ from current beneficiary` |
 | 163 | `Funding deadline has passed` |
 | 164 | `Contract balance below funded amount` |
+| 223 | `storage limit out of range` |
 
 ## Client Guidance
 

@@ -263,13 +263,33 @@ pub const DEFAULT_ADMIN_PROPOSAL_VALIDITY_SECS: u64 = 604_800; // 7 days
 /// maturity/claim locks are far in the future.
 ///
 /// Named as a constant so operators can reason about and audit the threshold.
+/// Also the **default** for [`LiquifactEscrow::get_storage_limit`] when
+/// [`DataKey::StorageLimit`] is unset — preserving pre-configurable behaviour.
 pub const INSTANCE_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 ledger/sec.
 
 /// Minimum persistent storage TTL extension horizon for per-investor allowlist entries.
 ///
 /// When the escrow uses the allowlist gate, investor funding depends on persistent entries.
 /// Extending persistent allowlist TTL reduces the risk of silent allowlist disablement.
+///
+/// When [`DataKey::StorageLimit`] is unset, persistent extensions also fall back to
+/// [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] (equal to this constant today).
 pub const PERSISTENT_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 ledger/sec.
+
+/// Inclusive lower bound for [`LiquifactEscrow::set_storage_limit`].
+///
+/// `0` is rejected: a zero ledger extension is a no-op that wastes the call budget.
+pub const MIN_STORAGE_LIMIT_LEDGERS: u32 = 1;
+
+/// Inclusive upper bound for [`LiquifactEscrow::set_storage_limit`].
+///
+/// Caps rent cost from an accidentally huge TTL extension (~30 days at the contract's
+/// "1 ledger/sec" model used elsewhere for TTL constants).
+pub const MAX_STORAGE_LIMIT_LEDGERS: u32 = 2_592_000;
+
+// Instance and persistent defaults stay equal so a single [`DataKey::StorageLimit`]
+// override applies uniformly to both storage kinds.
+const _: () = assert!(INSTANCE_TTL_MIN_EXTENSION_LEDGERS == PERSISTENT_TTL_MIN_EXTENSION_LEDGERS);
 
 /// Stable typed errors emitted by LiquiFact escrow entrypoints.
 ///
@@ -576,6 +596,10 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::set_storage_limit`] received a value outside
+    /// [`MIN_STORAGE_LIMIT_LEDGERS`]..=[`MAX_STORAGE_LIMIT_LEDGERS`].
+    StorageLimitOutOfRange = 223,
 }
 
 #[inline(always)]
@@ -875,6 +899,11 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Admin-configured storage TTL extension horizon in ledgers, applied by
+    /// [`LiquifactEscrow::bump_ttl`] and funding-deadline TTL top-ups.
+    /// Absent ⇒ falls back to [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] (preserves
+    /// pre-configurable behaviour). Updated via [`LiquifactEscrow::set_storage_limit`].
+    StorageLimit,
 }
 
 // --- Data types ---
@@ -4856,10 +4885,8 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .set(&DataKey::FundingDeadline, &new_deadline);
-        env.storage().instance().extend_ttl(
-            INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-            INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-        );
+        let ttl = Self::get_storage_limit(env.clone());
+        env.storage().instance().extend_ttl(ttl, ttl);
 
         FundingDeadlineExtended {
             name: symbol_short!("fund_ext"),
@@ -4971,6 +4998,43 @@ impl LiquifactEscrow {
         new_horizon
     }
 
+    /// Return the admin-configured storage TTL extension horizon in ledgers.
+    ///
+    /// Falls back to [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] when [`DataKey::StorageLimit`]
+    /// is unset, preserving the historical hard-coded bump amount.
+    pub fn get_storage_limit(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageLimit)
+            .unwrap_or(INSTANCE_TTL_MIN_EXTENSION_LEDGERS)
+    }
+
+    /// Set the storage TTL extension horizon used by [`LiquifactEscrow::bump_ttl`]
+    /// and funding-deadline TTL top-ups.
+    ///
+    /// # Authorization
+    /// Requires the signature of the current [`InvoiceEscrow::admin`].
+    ///
+    /// # Errors
+    /// - [`EscrowError::StorageLimitOutOfRange`] if `limit` is outside
+    ///   [`MIN_STORAGE_LIMIT_LEDGERS`]..=[`MAX_STORAGE_LIMIT_LEDGERS`].
+    ///
+    /// # Returns
+    /// The newly stored limit.
+    pub fn set_storage_limit(env: Env, limit: u32) -> u32 {
+        let _escrow = Self::load_escrow_require_admin(&env);
+
+        ensure(
+            &env,
+            (MIN_STORAGE_LIMIT_LEDGERS..=MAX_STORAGE_LIMIT_LEDGERS).contains(&limit),
+            EscrowError::StorageLimitOutOfRange,
+        );
+
+        env.storage().instance().set(&DataKey::StorageLimit, &limit);
+
+        limit
+    }
+
     pub fn bump_ttl(env: Env, allowlisted: Vec<Address>) {
         // Permissionless TTL extension.
         //
@@ -4986,19 +5050,19 @@ impl LiquifactEscrow {
         // - ADR-007: storage key evolution policy (additive changes / key semantics).
         // - docs/escrow-ledger-time.md: all gating uses `Env::ledger().timestamp()` with `>=`.
 
+        // Admin-configurable horizon (default = INSTANCE_TTL_MIN_EXTENSION_LEDGERS).
+        let ttl = Self::get_storage_limit(env.clone());
+
         // Extend persistent TTL for allowlisted investor entries.
         for addr in allowlisted.iter() {
             // Persistent allowlist entry.
             env.storage().persistent().extend_ttl(
                 &DataKey::InvestorAllowlisted(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                ttl,
+                ttl,
             );
             // Instance keys that may be per‑investor (contribution & claim lock).
-            env.storage().instance().extend_ttl(
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-            );
+            env.storage().instance().extend_ttl(ttl, ttl);
         }
 
         // Instance storage TTL is contract-wide under Soroban SDK 25. The call above covers
@@ -5007,31 +5071,27 @@ impl LiquifactEscrow {
         // Persistent per-investor keys and allowlist entries (independent TTL per address).
         for addr in allowlisted.iter() {
             let k = DataKey::InvestorAllowlisted(addr.clone());
-            env.storage().persistent().extend_ttl(
-                &k,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-            );
+            env.storage().persistent().extend_ttl(&k, ttl, ttl);
             // Extend persistent TTL for per-investor persistent keys used by this contract.
             env.storage().persistent().extend_ttl(
                 &DataKey::InvestorContribution(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                ttl,
+                ttl,
             );
             env.storage().persistent().extend_ttl(
                 &DataKey::InvestorEffectiveYield(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                ttl,
+                ttl,
             );
             env.storage().persistent().extend_ttl(
                 &DataKey::InvestorClaimNotBefore(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                ttl,
+                ttl,
             );
             env.storage().persistent().extend_ttl(
                 &DataKey::InvestorClaimed(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
+                ttl,
+                ttl,
             );
         }
     }
