@@ -448,6 +448,14 @@ pub enum EscrowError {
     PartialSettleUnauthorizedCaller = 200,
     MaxPerInvestorCapNotConfigured = 24, // new
     MaxPerInvestorCapNotRaised = 25,     // new
+    /// [`LiquifactEscrow::fund`] blocked while the operational pause flag is set.
+    PausedBlocksFunding = 210,
+    /// [`LiquifactEscrow::settle`] blocked while the operational pause flag is set.
+    PausedBlocksSettlement = 211,
+    /// [`LiquifactEscrow::withdraw`] blocked while the operational pause flag is set.
+    PausedBlocksWithdrawal = 212,
+    /// [`LiquifactEscrow::claim_investor_payout`] blocked while the operational pause flag is set.
+    PausedBlocksInvestorClaims = 213,
 }
 
 #[inline(always)]
@@ -476,6 +484,20 @@ pub(crate) fn validate_maturity_bounds(env: &Env, maturity: u64, max_horizon: u6
         maturity <= max_allowed,
         EscrowError::MaturityExceedsMaxHorizon,
     );
+}
+
+/// Ensure `status` is one of the allowed values in `allowed`; panics with `error` otherwise.
+pub(crate) fn guard_status_in(env: &Env, status: u32, allowed: &[u32], error: EscrowError) {
+    if !allowed.contains(&status) {
+        fail(env, error);
+    }
+}
+
+/// Ensure `status` equals `expected`; panics with `error` otherwise.
+pub(crate) fn guard_status_eq(env: &Env, status: u32, expected: u32, error: EscrowError) {
+    if status != expected {
+        fail(env, error);
+    }
 }
 
 // --- Storage keys ---
@@ -607,6 +629,9 @@ pub enum DataKey {
     /// Ledger timestamp recorded when [`LiquifactEscrow::settle`] transitions status to 2.
     /// Absent ⇒ not yet settled, or legacy instance. Read via [`LiquifactEscrow::get_settled_at`].
     SettledAt,
+    /// Operational pause flag (`true` = risk-bearing entrypoints blocked).
+    /// Absent ⇒ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
+    Paused,
 }
 
 // --- Data types ---
@@ -852,17 +877,6 @@ pub struct MaturityUpdatedEvent {
     pub old_maturity: u64,
     pub new_maturity: u64,
 }
-
-#[contractevent]
-pub struct BeneficiaryRotated {
-    #[topic]
-    pub name: Symbol,
-    #[topic]
-    pub invoice_id: Symbol,
-    pub old_sme: Address,
-    pub new_sme: Address,
-}
-
 #[contractevent]
 pub struct AdminTransferredEvent {
     #[topic]
@@ -1139,6 +1153,17 @@ pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
 }
 
+/// Emitted by [`LiquifactEscrow::set_paused`] whenever the operational pause flag is written.
+#[contractevent]
+pub struct PausedChanged {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// `1` = paused, `0` = unpaused.
+    pub active: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -1183,6 +1208,14 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .get(&DataKey::LegalHold)
+            .unwrap_or(false)
+    }
+
+    /// Read the operational pause flag; defaults to `false` when unset.
+    fn paused_active(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
             .unwrap_or(false)
     }
 
@@ -1374,6 +1407,12 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .set(&DataKey::MaturityMaxHorizon, &max_horizon);
+
+        if let Some(deadline) = &funding_deadline {
+            env.storage()
+                .instance()
+                .set(&DataKey::FundingDeadline, deadline);
+        }
 
         env.storage()
             .instance()
@@ -1625,7 +1664,7 @@ impl LiquifactEscrow {
             &env,
             escrow.status,
             &[2, 3, 4],
-            EscrowError::SweepNotTerminal,
+            EscrowError::DustSweepNotTerminal,
         );
 
         let treasury = Self::treasury_or_fail(&env);
@@ -1794,6 +1833,11 @@ impl LiquifactEscrow {
     /// Whether a compliance/legal hold is active (defaults to `false` if unset).
     pub fn get_legal_hold(env: Env) -> bool {
         Self::legal_hold_active(&env)
+    }
+
+    /// Read the operational pause flag; defaults to `false` when unset.
+    pub fn is_paused(env: Env) -> bool {
+        Self::paused_active(&env)
     }
 
     /// Configured minimum delay between [`LiquifactEscrow::request_clear_legal_hold`]
@@ -2450,6 +2494,36 @@ impl LiquifactEscrow {
     /// hold + key loss cannot strand funds without an off-chain recovery vote that executes
     /// `propose_admin`, `accept_admin`, then `clear_legal_hold`. See
     /// `docs/escrow-legal-hold.md`.
+    //
+    /// Toggle the operational pause flag. Only the **current** [`InvoiceEscrow::admin`] may call.
+    ///
+    /// When `active` is `true`, risk-bearing entrypoints (`fund`, `settle`, `withdraw`,
+    /// `claim_investor_payout`) are blocked with typed [`EscrowError::PausedBlocks*`] errors.
+    ///
+    /// Emits [`PausedChanged`] on every write, even when the new value matches the current one.
+    pub fn set_paused(env: Env, active: bool) {
+        let escrow = Self::load_escrow_require_admin(&env);
+        let invoice_id = escrow.invoice_id;
+        env.storage().instance().set(&DataKey::Paused, &active);
+        PausedChanged {
+            name: symbol_short!("paused"),
+            invoice_id,
+            active: if active { 1 } else { 0 },
+        }
+        .publish(&env);
+    }
+
+    /// Set or clear compliance hold. Only the **current** [`InvoiceEscrow::admin`] may call.
+    ///
+    /// **Clearing:** always requires the current admin's authorization — there is no timelock,
+    /// council override, or break-glass entrypoint. After
+    /// [`LiquifactEscrow::propose_admin`] and [`LiquifactEscrow::accept_admin`], only the **new**
+    /// admin can clear a persisted hold.
+    ///
+    /// **Governance posture:** production `admin` must be a multisig or governed contract so
+    /// hold + key loss cannot strand funds without an off-chain recovery vote that executes
+    /// `propose_admin`, `accept_admin`, then `clear_legal_hold`. See
+    /// `docs/escrow-legal-hold.md`.
     pub fn set_legal_hold(env: Env, active: bool) {
         let escrow = Self::load_escrow_require_admin(&env);
 
@@ -2917,7 +2991,11 @@ impl LiquifactEscrow {
         // Actually, reusing EscrowError::EscrowNotOpenForFunding since CapLowerNotOpen is specific to lower.
         // But wait, the issue said "parallel guards" and "open-state-only".
         // Let's use EscrowError::EscrowNotOpenForFunding.
-        ensure(&env, escrow.status == 0, EscrowError::EscrowNotOpenForFunding);
+        ensure(
+            &env,
+            escrow.status == 0,
+            EscrowError::EscrowNotOpenForFunding,
+        );
 
         let old_cap: Option<u32> = env
             .storage()
@@ -3292,6 +3370,13 @@ impl LiquifactEscrow {
         simple_fund: bool,
         committed_lock_secs: u64,
     ) -> InvoiceEscrow {
+        // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksFunding,
+        );
+
         investor.require_auth();
 
         ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
@@ -3388,7 +3473,6 @@ impl LiquifactEscrow {
 
         if simple_fund {
             // Non-tiered deposits never carry a commitment lock.
-            tier_lock_secs = 0;
             if prev == 0 {
                 investor_effective_yield_bps = escrow.yield_bps;
                 Self::set_persistent_investor_effective_yield(
@@ -3576,6 +3660,12 @@ impl LiquifactEscrow {
     }
 
     pub fn settle(env: Env) -> InvoiceEscrow {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksSettlement,
+        );
         ensure(
             &env,
             !Self::legal_hold_active(&env),
@@ -3633,6 +3723,12 @@ impl LiquifactEscrow {
     /// - [`EscrowError::WithdrawalNotFunded`] — escrow not in funded state.
     /// - [`EscrowError::InsufficientContractBalance`] — contract holds less than `funded_amount`.
     pub fn withdraw(env: Env) -> InvoiceEscrow {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksWithdrawal,
+        );
         ensure(
             &env,
             !Self::legal_hold_active(&env),
@@ -3725,6 +3821,12 @@ impl LiquifactEscrow {
     /// Emits typed [`EscrowError`] codes for legal hold, missing contribution, unsettled escrow,
     /// or an unexpired commitment lock.
     pub fn claim_investor_payout(env: Env, investor: Address) {
+        // Operational pause gate (read-only), orthogonal to legal hold.
+        ensure(
+            &env,
+            !Self::paused_active(&env),
+            EscrowError::PausedBlocksInvestorClaims,
+        );
         ensure(
             &env,
             !Self::legal_hold_active(&env),
@@ -4018,19 +4120,18 @@ impl LiquifactEscrow {
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
-            // Instance keys that may be per‑investor (contribution & claim lock).
-            env.storage().instance().extend_ttl(
+            // Extend persistent TTL for per-investor persistent keys used by this contract.
+            env.storage().persistent().extend_ttl(
                 &DataKey::InvestorContribution(addr.clone()),
                 INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
                 INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
             );
-            env.storage().instance().extend_ttl(
+            env.storage().persistent().extend_ttl(
                 &DataKey::InvestorClaimNotBefore(addr.clone()),
                 INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
                 INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
             );
         }
-
 
         // Instance storage TTL is contract-wide under Soroban SDK 25. The call above covers
         // Escrow, Version, LegalHold, snapshots, caps, and other instance keys.
@@ -4071,39 +4172,6 @@ impl LiquifactEscrow {
     ///
     /// Allowed only in non-terminal states (0 = open, 1 = funded).
     /// Invariant: after rotation, only the new SME may withdraw/settle.
-    pub fn rotate_beneficiary(env: Env, new_sme: Address) {
-        let mut escrow = Self::get_escrow(env.clone());
-
-        guard_status_in(
-            &env,
-            escrow.status,
-            &[0, 1],
-            EscrowError::RotateBeneficiaryNotOpen,
-        );
-
-        escrow.sme_address.require_auth();
-        escrow.admin.require_auth();
-
-        ensure(
-            &env,
-            escrow.sme_address != new_sme,
-            EscrowError::NewSmeSameAsCurrent,
-        );
-
-        let old_sme = escrow.sme_address.clone();
-        escrow.sme_address = new_sme.clone();
-
-        env.storage().instance().set(&DataKey::Escrow, &escrow);
-
-        BeneficiaryRotated {
-            name: Symbol::new(&env, "BeneficiaryRotated"),
-            invoice_id: escrow.invoice_id.clone(),
-            old_sme,
-            new_sme,
-        }
-        .publish(&env);
-    }
-
     /// Propose a new admin (`PendingAdmin`) — step 1 of a two-step handover.
     ///
     /// Requires current admin authorization. The destination must differ from the current admin.
