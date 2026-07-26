@@ -58,6 +58,10 @@ If instance storage expires and is not extended, `AllowlistActive` returns `fals
 `unwrap_or`), silently disabling the allowlist gate even if persistent allowlist entries remain.
 Operators must extend instance storage TTL together with persistent storage TTL.
 
+### Write-time TTL extension for persistent keys
+
+Per-investor persistent keys (`InvestorContribution`, `InvestorEffectiveYield`, `InvestorClaimNotBefore`, `InvestorClaimed`) are automatically extended at write time inside the fund and claim flows using the `PERSISTENT_TTL_MIN_EXTENSION_LEDGERS` horizon. This provides defense-in-depth against silent expiry of live positions prior to settlement.
+
 ### Permissionless TTL extension
 
 The contract includes a permissionless `bump_ttl` entrypoint that extends TTLs for:
@@ -83,8 +87,20 @@ Key properties (invariant):
 
 Thresholds are defined as **named constants** in `escrow/src/lib.rs`:
 
-- `INSTANCE_TTL_MIN_EXTENSION_SECS`
-- `PERSISTENT_TTL_MIN_EXTENSION_SECS`
+- `INSTANCE_TTL_MIN_EXTENSION_LEDGERS` (default ≈ 1h)
+- `PERSISTENT_TTL_MIN_EXTENSION_LEDGERS` (default ≈ 1h; kept equal to the instance default)
+
+### Admin-configurable storage limit
+
+Operators may override the TTL extension horizon via:
+
+- `get_storage_limit` — returns the configured ledger count, or the compile-time default when unset
+- `set_storage_limit` — admin-only; accepts values in `MIN_STORAGE_LIMIT_LEDGERS..=MAX_STORAGE_LIMIT_LEDGERS`
+
+Unset storage preserves historical behaviour (`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`). Out-of-range
+values revert with typed `EscrowError::StorageLimitOutOfRange` (223). The configured limit is
+applied uniformly to instance and persistent `extend_ttl` calls inside `bump_ttl` and funding-
+deadline TTL top-ups.
 
 ### Why permissionless is acceptable
 
@@ -97,4 +113,3 @@ References:
 
 - ADR-007: storage key evolution policy and semantics
 - docs/escrow-ledger-time.md: time gates use `Env::ledger().timestamp()` with inclusive `>=` semantics
-
