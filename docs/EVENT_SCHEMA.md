@@ -47,8 +47,8 @@ The current contract defines 38 event structs.
 | `AttestationDigestUnrevoked` | `att_unrev` | `unrevoke_attestation_digest` |
 | `BeneficiaryRotated` | `ben_rot` | `rotate_beneficiary` |
 | `BenChange` | `ben_chg` | `rotate_beneficiary` |
-| `CollateralClearedEvt` | — | `clear_sme_collateral_commitment` |
-| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment`, `batch_record_collateral` |
+| `CollateralClearedEvt` | `coll_clr` | `clear_sme_collateral_commitment` |
+| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment` |
 | `ContractUpgraded` | `upgrade` | `upgrade` |
 | `DeprecatedTransferAdminUsed` | `depr_xfer` | `transfer_admin` |
 | `EscrowFunded` | `funded` | `fund`, `fund_with_commitment` |
@@ -343,6 +343,30 @@ Data:
 
 Note: this event records SME-reported collateral metadata only. It is not proof
 of custody, token movement, lien, or enforceable on-chain collateral.
+
+### `CollateralClearedEvt`
+
+Emitted after successful `clear_sme_collateral_commitment`. Exactly one event is
+published per successful clear (no duplicate `coll_clr` emission).
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `collateral_cleared_evt` |
+| 1 | `name` | `Symbol` | `coll_clr` |
+| 2 | `invoice_id` | `Symbol` | Escrow invoice id |
+
+Data:
+
+| Field | Type |
+|---|---|
+| `asset` | `Symbol` |
+| `amount` | `i128` |
+| `recorded_at` | `u64` |
+
+Note: this event retires SME-reported collateral metadata only. It is not proof
+of custody release, token movement, or enforceable on-chain collateral.
 
 ### `SmeWithdrew`
 

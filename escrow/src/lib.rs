@@ -1637,8 +1637,7 @@ pub struct CollateralRecordedEvt {
 /// copies the stored commitment fields before deletion so off-chain indexers can
 /// reconstruct which SME-reported asset record was retired without polling
 /// storage after the mutation. Exactly one `coll_clr` event is published per
-/// successful clear — do not emit a second parallel `#[contractevent]` with the
-/// same topic.
+/// successful clear — do not emit a second event with the same topic.
 ///
 /// # Fields
 /// - `name`: Hardcoded `coll_clr` symbol.
