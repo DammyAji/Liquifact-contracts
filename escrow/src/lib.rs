@@ -1164,6 +1164,16 @@ pub struct MaturityUpdatedEvent {
 }
 
 #[contractevent]
+pub struct ProtocolFeeUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub old_fee_bps: i64,
+    pub new_fee_bps: i64,
+}
+
+#[contractevent]
 pub struct AdminTransferredEvent {
     #[topic]
     pub name: Symbol,
@@ -2389,16 +2399,57 @@ impl LiquifactEscrow {
             .unwrap_or(0)
     }
 
-    /// Immutable protocol fee in basis points (`0..=10_000`) applied to the SME disbursement at
+    /// Current protocol fee in basis points (`0..=10_000`) applied to the SME disbursement at
     /// [`LiquifactEscrow::withdraw`]; `0` means no fee (full `funded_amount` goes to the SME).
     ///
-    /// Set once at [`LiquifactEscrow::init`] and never mutated. Reads `0` for instances predating
-    /// [`DataKey::ProtocolFeeBps`] (additive-key default), matching legacy disbursement behavior.
+    /// Reads `0` for instances predating [`DataKey::ProtocolFeeBps`] (additive-key default),
+    /// matching legacy disbursement behavior. The current admin may update the value via
+    /// [`LiquifactEscrow::set_protocol_fee_bps`].
     pub fn get_protocol_fee_bps(env: Env) -> i64 {
         env.storage()
             .instance()
             .get(&DataKey::ProtocolFeeBps)
             .unwrap_or(0)
+    }
+
+    /// Admin-only setter for the protocol fee in basis points.
+    ///
+    /// Valid values are `0..=10_000`. Out-of-range values fail with
+    /// [`EscrowError::ProtocolFeeBpsOutOfRange`]. The call requires the current escrow admin to
+    /// authorize it and emits [`ProtocolFeeUpdated`] when the stored fee changes.
+    pub fn set_protocol_fee_bps(env: Env, new_fee_bps: i64) -> i64 {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        ensure(
+            &env,
+            (0..=10_000).contains(&new_fee_bps),
+            EscrowError::ProtocolFeeBpsOutOfRange,
+        );
+
+        let old_fee_bps: i64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+
+        if new_fee_bps == old_fee_bps {
+            return old_fee_bps;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolFeeBps, &new_fee_bps);
+
+        let invoice_id = escrow.invoice_id.clone();
+        ProtocolFeeUpdated {
+            name: symbol_short!("fee_upd"),
+            invoice_id: invoice_id.clone(),
+            old_fee_bps,
+            new_fee_bps,
+        }
+        .publish(&env);
+
+        new_fee_bps
     }
 
     /// Optional cap on **distinct** investor addresses (`prev == 0` at fund time); [`None`] if unlimited.
