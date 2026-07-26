@@ -21,6 +21,26 @@ Records an off-chain collateral pledge against the escrow's invoice.
 - **Idempotency**: calling again overwrites the previous amount.
 - **Token movement**: none.
 
+### `batch_record_collateral(env, items: Vec<(Symbol, i128)>) -> SmeCollateralCommitment`
+
+Batch variant of `record_sme_collateral_commitment`. Processes a bounded vector of
+`(asset, amount)` pairs atomically: either **all** items pass validation and each emits
+`CollateralRecordedEvt`, or **any** single item fails and the entire batch is rejected
+with no state change.
+
+- **Auth**: SME address (`sme_address` from the escrow record).
+- **Bounds**: `items` must be non-empty (`CollateralBatchEmpty`) and at most
+  `MAX_COLLATERAL_BATCH` (50) items (`CollateralBatchTooLarge`).
+- **Per-item validation**: `amount > 0` (`CollateralAmountNotPositive`), non-empty
+  `asset` symbol (`CollateralAssetEmpty`).
+- **Timestamp check**: the first item checks `now >= existing.recorded_at` to prevent
+  backwards timestamps (`CollateralTimestampBackwards`).
+- **Storage**: each item overwrites `DataKey::SmeCollateralPledge`; the final commitment
+  is the last item in the vector.
+- **Event**: emits `CollateralRecordedEvt` for **each** item, preserving the per-item
+  audit trail.
+- **Token movement**: none.
+
 ### `get_sme_collateral_commitment(env) -> Option<CollateralPledge>`
 
 Returns the current pledge record, or `None` if none has been recorded (or it was cleared).

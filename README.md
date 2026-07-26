@@ -177,6 +177,7 @@ liquifact-contracts/
 | `bind_primary_attestation_hash` | Admin | Admin sets a single-write 32-byte digest (single-set guarantee). |
 | `append_attestation_digest` | Admin | Admin appends to bounded audit log. |
 | `record_sme_collateral_commitment` | SME | SME records collateral pledge (metadata only). |
+| `batch_record_collateral` | SME | Batch-record collateral commitments atomically (all-or-nothing); bounded by `MAX_COLLATERAL_BATCH`. |
 | `get_sme_collateral_commitment` | — | Return current pledge record, or `None`. |
 | `clear_sme_collateral_commitment` | SME | Retire a recorded pledge; emits `CollateralClearedEvt`. Returns `NoCollateralToClear` if none exists. |
 | `propose_admin` | Admin | Step 1 of admin handover — sets `PendingAdmin` and proposal expiry. |

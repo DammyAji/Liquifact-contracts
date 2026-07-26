@@ -231,6 +231,9 @@ pub const MAX_INVOICE_AMOUNT: i128 = (1i128 << 63) - 1; // floor(√(i128::MAX /
 /// Mirrors the spirit of `MAX_ATTESTATION_APPEND_ENTRIES` to limit per-call work.
 pub const MAX_FUND_BATCH: u32 = 50;
 
+/// Upper bound on [`LiquifactEscrow::settle_batch`] entries to keep storage/CPU bounded.
+pub const MAX_SETTLE_BATCH: u32 = 50;
+
 /// Upper bound on [`LiquifactEscrow::refund_batch`] entries to keep storage/CPU bounded.
 pub const MAX_REFUND_BATCH: u32 = 50;
 
@@ -239,6 +242,9 @@ pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
+
+/// Upper bound on [`LiquifactEscrow::record_sme_collateral_commitment_batch`] entries.
+pub const MAX_COLLATERAL_BATCH: u32 = 50;
 
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
@@ -365,6 +371,10 @@ pub enum EscrowError {
     CollateralAssetEmpty = 61,
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a timestamp before the stored record.
     CollateralTimestampBackwards = 62,
+    /// [`LiquifactEscrow::record_sme_collateral_commitment_batch`] received an empty items vector.
+    CollateralBatchEmpty = 63,
+    /// [`LiquifactEscrow::record_sme_collateral_commitment_batch`] exceeded [`MAX_COLLATERAL_BATCH`].
+    CollateralBatchTooLarge = 64,
 
     /// [`LiquifactEscrow::set_investors_allowlisted`] received an empty batch.
     InvestorBatchEmpty = 70,
@@ -565,6 +575,10 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::init`] rejected a `funding_deadline` at or after maturity.
     FundingDeadlineAtOrAfterMaturity = 218,
 
+    /// [`LiquifactEscrow::settle_batch`] received an empty escrow addresses vector.
+    SettlementBatchEmpty = 223,
+    /// [`LiquifactEscrow::settle_batch`] exceeded [`MAX_SETTLE_BATCH`].
+    SettlementBatchTooLarge = 224,
     /// [`LiquifactEscrow::unfund`] called when [`InvoiceEscrow::status`] is not 0 (open).
     /// Unfunding is only valid while the escrow is still accepting contributions.
     UnfundEscrowNotOpen = 220,
@@ -3112,6 +3126,106 @@ impl LiquifactEscrow {
         commitment
     }
 
+    /// Batch variant of [`LiquifactEscrow::record_sme_collateral_commitment`].
+    ///
+    /// Processes a bounded vector of `(asset, amount)` pairs atomically: either **all** items
+    /// pass validation and the final commitment is stored, or **any** single item fails and the
+    /// entire batch is rejected with no state change.
+    ///
+    /// Each item undergoes the same per-item checks as the single entrypoint:
+    /// - `amount > 0` ([`EscrowError::CollateralAmountNotPositive`])
+    /// - `asset` is non-empty ([`EscrowError::CollateralAssetEmpty`])
+    /// - Replacement timestamp not backwards ([`EscrowError::CollateralTimestampBackwards`])
+    ///
+    /// The stored [`SmeCollateralCommitment`] after a successful batch is the **last** item in
+    /// the vector. A [`CollateralRecordedEvt`] is emitted for **each** item, preserving the
+    /// per-item audit trail.
+    ///
+    /// # Batch bounds
+    /// - `items` must be non-empty ([`EscrowError::CollateralBatchEmpty`]).
+    /// - `items.len()` must not exceed [`MAX_COLLATERAL_BATCH`] ([`EscrowError::CollateralBatchTooLarge`]).
+    ///
+    /// # Authorization
+    /// Requires [`InvoiceEscrow::sme_address`] auth (same as the single entrypoint).
+    pub fn batch_record_collateral(
+        env: Env,
+        items: Vec<(Symbol, i128)>,
+    ) -> SmeCollateralCommitment {
+        let n = items.len();
+        ensure(&env, n > 0, EscrowError::CollateralBatchEmpty);
+        ensure(
+            &env,
+            n <= MAX_COLLATERAL_BATCH,
+            EscrowError::CollateralBatchTooLarge,
+        );
+
+        // ── Pre-validation (all-or-nothing) ─────────────────────────────────
+        // Validate every item's per-item invariants before any storage write.
+        // A single invalid item (zero/negative amount, empty asset) rejects the
+        // entire batch atomically.
+        for i in 0..n {
+            let (asset, amount) = items.get(i).unwrap();
+            ensure(&env, amount > 0, EscrowError::CollateralAmountNotPositive);
+            ensure(
+                &env,
+                asset != Symbol::new(&env, ""),
+                EscrowError::CollateralAssetEmpty,
+            );
+        }
+
+        let escrow = Self::load_escrow_require_sme(&env);
+        let now = env.ledger().timestamp();
+
+        // Check timestamp against the existing stored commitment (if any).
+        // Only the first item needs this check; subsequent items in the same
+        // batch share `now` as their `recorded_at`, so `now >= now` always holds.
+        let prior: Option<SmeCollateralCommitment> =
+            env.storage().instance().get(&DataKey::SmeCollateralPledge);
+        if let Some(ref existing) = prior {
+            ensure(
+                &env,
+                now >= existing.recorded_at,
+                EscrowError::CollateralTimestampBackwards,
+            );
+        }
+
+        let mut last_commitment = SmeCollateralCommitment {
+            asset: Symbol::new(&env, ""),
+            amount: 0,
+            recorded_at: now,
+        };
+
+        for i in 0..n {
+            let (asset, amount) = items.get(i).unwrap();
+
+            let prior_amount = if i == 0 {
+                prior.as_ref().map(|c| c.amount).unwrap_or(0)
+            } else {
+                last_commitment.amount
+            };
+
+            last_commitment = SmeCollateralCommitment {
+                asset: asset.clone(),
+                amount,
+                recorded_at: now,
+            };
+
+            env.storage()
+                .instance()
+                .set(&DataKey::SmeCollateralPledge, &last_commitment);
+
+            CollateralRecordedEvt {
+                name: symbol_short!("coll_rec"),
+                invoice_id: escrow.invoice_id.clone(),
+                amount,
+                prior_amount,
+            }
+            .publish(&env);
+        }
+
+        last_commitment
+    }
+
     /// Set or clear the lightweight **operational pause**. Only the **current**
     /// [`InvoiceEscrow::admin`] may call.
     ///
@@ -4363,6 +4477,42 @@ impl LiquifactEscrow {
         .publish(&env);
 
         escrow
+    }
+
+    /// Batch settle entrypoint: settle multiple escrows in a single call.
+    ///
+    /// Each address is processed sequentially. All existing [`LiquifactEscrow::settle`]
+    /// invariants (pause gate, legal hold, SME auth, funded status, maturity check) are
+    /// enforced per entry. The entire batch is atomic: if any escrow fails to settle,
+    /// the entire call reverts.
+    ///
+    /// # Parameters
+    /// - `escrows`: `Vec<Address>` of escrow contract addresses to settle.
+    ///
+    /// # Errors
+    /// - [`EscrowError::SettlementBatchEmpty`] if `escrows` is empty
+    /// - [`EscrowError::SettlementBatchTooLarge`] if `escrows.len() > [`MAX_SETTLE_BATCH`]
+    ///
+    /// Per-entry errors (not funded, maturity not reached, legal hold, paused, auth failure)
+    /// terminate the entire batch atomically.
+    ///
+    /// # Events
+    /// One [`EscrowSettled`] per successfully settled escrow (emitted by each target escrow's
+    /// [`LiquifactEscrow::settle`] call).
+    pub fn settle_batch(env: Env, escrows: Vec<Address>) {
+        let n = escrows.len();
+        ensure(&env, n > 0, EscrowError::SettlementBatchEmpty);
+        ensure(
+            &env,
+            n <= MAX_SETTLE_BATCH,
+            EscrowError::SettlementBatchTooLarge,
+        );
+
+        for i in 0..n {
+            let escrow_addr = escrows.get(i).unwrap();
+            let client = LiquifactEscrowClient::new(&env, &escrow_addr);
+            client.settle();
+        }
     }
 
     /// SME pulls funded liquidity, net of the immutable protocol fee.
