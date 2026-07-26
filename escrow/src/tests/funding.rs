@@ -6379,7 +6379,9 @@ fn assert_preview_matches_actual(
     amount: i128,
     lock: u64,
 ) {
-    let (preview_bps, preview_lock) = client.preview_yield_tier(&amount, &lock);
+    let preview = client.preview_yield_tier(&amount, &lock);
+    let preview_bps = preview.yield_bps;
+    let preview_lock = preview.matched_lock_secs;
     let investor = Address::generate(env);
     sac_admin.mint(&investor, &amount);
     client.fund_with_commitment(&investor, &amount, &lock);
@@ -6463,9 +6465,9 @@ fn test_preview_matches_actual_zero_lock_with_tiers() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, sac_admin) = setup_three_tier_escrow_with_sac(&env, "PV_ZERO", 1_000_000i128);
-    let (preview_bps, preview_lock) = client.preview_yield_tier(&1_000i128, &0u64);
-    assert_eq!(preview_bps, 500, "zero lock must return base yield");
-    assert_eq!(preview_lock, 0, "zero lock must return lock=0");
+    let preview = client.preview_yield_tier(&1_000i128, &0u64);
+    assert_eq!(preview.yield_bps, 500, "zero lock must return base yield");
+    assert_eq!(preview.matched_lock_secs, 0, "zero lock must return lock=0");
     assert_preview_matches_actual(&client, &env, &sac_admin, 1_000i128, 0u64);
 }
 
