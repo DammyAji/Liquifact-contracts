@@ -60,7 +60,7 @@ pub(crate) fn assert_contract_error<T, E>(
 mod admin;
 mod attestations;
 mod auth_matrix;
-mod bounds_validation;
+mod beneficiary;
 mod cap_validation;
 #[rustfmt::skip]
 mod coverage;
