@@ -730,20 +730,6 @@ pub(crate) fn validate_maturity_bounds(env: &Env, maturity: u64, max_horizon: u6
     );
 }
 
-/// Ensure `status` is one of the allowed values in `allowed`; panics with `error` otherwise.
-pub(crate) fn guard_status_in(env: &Env, status: u32, allowed: &[u32], error: EscrowError) {
-    if !allowed.contains(&status) {
-        fail(env, error);
-    }
-}
-
-/// Ensure `status` equals `expected`; panics with `error` otherwise.
-pub(crate) fn guard_status_eq(env: &Env, status: u32, expected: u32, error: EscrowError) {
-    if status != expected {
-        fail(env, error);
-    }
-}
-
 // --- Storage keys ---
 
 #[contracttype]
@@ -874,9 +860,6 @@ pub enum DataKey {
     /// Ledger timestamp recorded when [`LiquifactEscrow::settle`] transitions status to 2.
     /// Absent ⇒ not yet settled, or legacy instance. Read via [`LiquifactEscrow::get_settled_at`].
     SettledAt,
-    /// Operational pause flag (`true` = risk-bearing entrypoints blocked).
-    /// Absent ⇒ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
-    Paused,
     /// When true, a lightweight **operational pause** blocks risk-bearing entrypoints
     /// (`fund`, `settle`, `withdraw`, `claim_investor_payout`) for incident response.
     /// Absent ⇒ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
@@ -1607,17 +1590,6 @@ pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
 }
 
-/// Emitted by [`LiquifactEscrow::set_paused`] whenever the operational pause flag is written.
-#[contractevent]
-pub struct PausedChanged {
-    #[topic]
-    pub name: Symbol,
-    #[topic]
-    pub invoice_id: Symbol,
-    /// `1` = paused, `0` = unpaused.
-    pub active: u32,
-}
-
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -2186,8 +2158,6 @@ impl LiquifactEscrow {
         let escrow = Self::get_escrow(env.clone());
         ensure(
             &env,
-            escrow.status,
-            &[2, 3, 4],
             is_terminal_status(escrow.status),
             EscrowError::DustSweepNotTerminal,
         );
@@ -3139,36 +3109,6 @@ impl LiquifactEscrow {
         PausedChanged {
             name: symbol_short!("paused"),
             invoice_id: escrow.invoice_id.clone(),
-            active: if active { 1 } else { 0 },
-        }
-        .publish(&env);
-    }
-
-    /// Set or clear compliance hold. Only the **current** [`InvoiceEscrow::admin`] may call.
-    ///
-    /// **Clearing:** always requires the current admin's authorization — there is no timelock,
-    /// council override, or break-glass entrypoint. After
-    /// [`LiquifactEscrow::propose_admin`] and [`LiquifactEscrow::accept_admin`], only the **new**
-    /// admin can clear a persisted hold.
-    ///
-    /// **Governance posture:** production `admin` must be a multisig or governed contract so
-    /// hold + key loss cannot strand funds without an off-chain recovery vote that executes
-    /// `propose_admin`, `accept_admin`, then `clear_legal_hold`. See
-    /// `docs/escrow-legal-hold.md`.
-    //
-    /// Toggle the operational pause flag. Only the **current** [`InvoiceEscrow::admin`] may call.
-    ///
-    /// When `active` is `true`, risk-bearing entrypoints (`fund`, `settle`, `withdraw`,
-    /// `claim_investor_payout`) are blocked with typed [`EscrowError::PausedBlocks*`] errors.
-    ///
-    /// Emits [`PausedChanged`] on every write, even when the new value matches the current one.
-    pub fn set_paused(env: Env, active: bool) {
-        let escrow = Self::load_escrow_require_admin(&env);
-        let invoice_id = escrow.invoice_id;
-        env.storage().instance().set(&DataKey::Paused, &active);
-        PausedChanged {
-            name: symbol_short!("paused"),
-            invoice_id,
             active: if active { 1 } else { 0 },
         }
         .publish(&env);
@@ -5089,32 +5029,6 @@ impl LiquifactEscrow {
         // Documentation references:
         // - ADR-007: storage key evolution policy (additive changes / key semantics).
         // - docs/escrow-ledger-time.md: all gating uses `Env::ledger().timestamp()` with `>=`.
-
-        // Extend persistent TTL for allowlisted investor entries.
-        for addr in allowlisted.iter() {
-            // Persistent allowlist entry.
-            env.storage().persistent().extend_ttl(
-                &DataKey::InvestorAllowlisted(addr.clone()),
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-                PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
-            );
-            // Extend persistent TTL for per-investor persistent keys used by this contract.
-            env.storage().persistent().extend_ttl(
-                &DataKey::InvestorContribution(addr.clone()),
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-            );
-            env.storage().persistent().extend_ttl(
-                &DataKey::InvestorClaimNotBefore(addr.clone()),
-            // Instance keys that may be per‑investor (contribution & claim lock).
-            env.storage().instance().extend_ttl(
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-                INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
-            );
-        }
-
-        // Instance storage TTL is contract-wide under Soroban SDK 25. The call above covers
-        // Escrow, Version, LegalHold, snapshots, caps, and other instance keys.
 
         // Persistent per-investor keys and allowlist entries (independent TTL per address).
         for addr in allowlisted.iter() {

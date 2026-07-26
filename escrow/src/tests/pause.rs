@@ -32,221 +32,221 @@ fn admin_can_unpause() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
-use crate::{EscrowError, PausedChanged};
-use soroban_sdk::{testutils::Events, token::StellarAssetClient, Event};
+    use crate::{EscrowError, PausedChanged};
+    use soroban_sdk::{testutils::Events, token::StellarAssetClient, Event};
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn init_open(
-    client: &LiquifactEscrowClient<'_>,
-    env: &Env,
-    admin: &Address,
-    sme: &Address,
-    id: &str,
-) -> (Address, Address) {
-    let token = Address::generate(env);
-    let treasury = Address::generate(env);
-    client.init(
-        admin,
-        &soroban_sdk::String::from_str(env, id),
-        sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    (token, treasury)
-}
+    fn init_open(
+        client: &LiquifactEscrowClient<'_>,
+        env: &Env,
+        admin: &Address,
+        sme: &Address,
+        id: &str,
+    ) -> (Address, Address) {
+        let token = Address::generate(env);
+        let treasury = Address::generate(env);
+        client.init(
+            admin,
+            &soroban_sdk::String::from_str(env, id),
+            sme,
+            &TARGET,
+            &800i64,
+            &0u64,
+            &token,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        );
+        (token, treasury)
+    }
 
-fn init_funded(
-    client: &LiquifactEscrowClient<'_>,
-    env: &Env,
-    admin: &Address,
-    sme: &Address,
-    investor: &Address,
-    id: &str,
-) -> (Address, Address) {
-    let (token, treasury) = init_open(client, env, admin, sme, id);
-    client.fund(investor, &TARGET);
-    (token, treasury)
-}
+    fn init_funded(
+        client: &LiquifactEscrowClient<'_>,
+        env: &Env,
+        admin: &Address,
+        sme: &Address,
+        investor: &Address,
+        id: &str,
+    ) -> (Address, Address) {
+        let (token, treasury) = init_open(client, env, admin, sme, id);
+        client.fund(investor, &TARGET);
+        (token, treasury)
+    }
 
-fn init_funded_with_real_token<'a>(
-    env: &'a Env,
-    admin: &Address,
-    sme: &Address,
-    investor: &Address,
-    id: &str,
-) -> (LiquifactEscrowClient<'a>, Address) {
-    let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
-    let token_id = sac.address();
-    let sac_admin = StellarAssetClient::new(env, &token_id);
-    let treasury = Address::generate(env);
-    let escrow_id = env.register(LiquifactEscrow, ());
-    let client = LiquifactEscrowClient::new(env, &escrow_id);
-    client.init(
-        admin,
-        &soroban_sdk::String::from_str(env, id),
-        sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &token_id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    sac_admin.mint(investor, &TARGET);
-    client.fund(investor, &TARGET);
-    (client, escrow_id)
-}
+    fn init_funded_with_real_token<'a>(
+        env: &'a Env,
+        admin: &Address,
+        sme: &Address,
+        investor: &Address,
+        id: &str,
+    ) -> (LiquifactEscrowClient<'a>, Address) {
+        let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
+        let token_id = sac.address();
+        let sac_admin = StellarAssetClient::new(env, &token_id);
+        let treasury = Address::generate(env);
+        let escrow_id = env.register(LiquifactEscrow, ());
+        let client = LiquifactEscrowClient::new(env, &escrow_id);
+        client.init(
+            admin,
+            &soroban_sdk::String::from_str(env, id),
+            sme,
+            &TARGET,
+            &800i64,
+            &0u64,
+            &token_id,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        );
+        sac_admin.mint(investor, &TARGET);
+        client.fund(investor, &TARGET);
+        (client, escrow_id)
+    }
 
-fn init_settled<'a>(
-    env: &'a Env,
-    admin: &Address,
-    sme: &Address,
-    investor: &Address,
-    id: &str,
-) -> (LiquifactEscrowClient<'a>, Address, Address, Address) {
-    let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
-    let token = sac.address();
-    let treasury = Address::generate(env);
-    let escrow_id = env.register(LiquifactEscrow, ());
-    let client = LiquifactEscrowClient::new(env, &escrow_id);
-    client.init(
-        admin,
-        &soroban_sdk::String::from_str(env, id),
-        sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let sac_admin = StellarAssetClient::new(env, &token);
-    sac_admin.mint(investor, &TARGET);
-    client.fund(investor, &TARGET);
-    client.settle();
-    (client, escrow_id, token, treasury)
-}
-
-// ── 1. fund ──────────────────────────────────────────────────────────────────
-
-#[test]
-#[should_panic]
-fn fund_blocked_when_paused() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    let investor = Address::generate(&env);
-    init_open(&client, &env, &admin, &sme, "PAU001");
-    client.set_paused(&true);
-    client.fund(&investor, &TARGET);
-}
-
-#[test]
-fn fund_succeeds_after_unpause() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    let investor = Address::generate(&env);
-    init_open(&client, &env, &admin, &sme, "PAU002");
-    client.set_paused(&true);
-    assert!(client.is_paused());
-    client.set_paused(&false);
-    assert!(!client.is_paused());
-}
-
-// ---------------------------------------------------------------------------
-// is_paused is O(1) read-only — does not mutate storage
-// ---------------------------------------------------------------------------
-#[test]
-fn is_paused_is_read_only() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    assert!(!client.is_paused());
-    client.set_paused(&true);
-    assert!(client.is_paused());
-}
-
-// ---------------------------------------------------------------------------
-// fund blocked when paused
-// ---------------------------------------------------------------------------
-#[test]
-fn fund_blocked_when_paused() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    client.set_paused(&true);
-    let investor = Address::generate(&env);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.fund(&investor, &100);
-    }));
-    assert!(result.is_err(), "fund should panic when paused");
-}
-
-// ---------------------------------------------------------------------------
-// fund succeeds after unpause
-// ---------------------------------------------------------------------------
-#[test]
-fn fund_succeeds_after_unpause() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    client.set_paused(&true);
-    client.set_paused(&false);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100);
-}
-
-// ---------------------------------------------------------------------------
-// settle blocked when paused
-// ---------------------------------------------------------------------------
-#[test]
-fn settle_blocked_when_paused() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100_000_000_000i128);
-    client.set_paused(&true);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    fn init_settled<'a>(
+        env: &'a Env,
+        admin: &Address,
+        sme: &Address,
+        investor: &Address,
+        id: &str,
+    ) -> (LiquifactEscrowClient<'a>, Address, Address, Address) {
+        let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
+        let token = sac.address();
+        let treasury = Address::generate(env);
+        let escrow_id = env.register(LiquifactEscrow, ());
+        let client = LiquifactEscrowClient::new(env, &escrow_id);
+        client.init(
+            admin,
+            &soroban_sdk::String::from_str(env, id),
+            sme,
+            &TARGET,
+            &800i64,
+            &0u64,
+            &token,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None::<i64>,
+        );
+        let sac_admin = StellarAssetClient::new(env, &token);
+        sac_admin.mint(investor, &TARGET);
+        client.fund(investor, &TARGET);
         client.settle();
-    }));
-    assert!(result.is_err(), "settle should panic when paused");
-}
+        (client, escrow_id, token, treasury)
+    }
 
-// ---------------------------------------------------------------------------
-// settle succeeds after unpause
-// ---------------------------------------------------------------------------
+    // ── 1. fund ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic]
+    fn fund_blocked_when_paused() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        let investor = Address::generate(&env);
+        init_open(&client, &env, &admin, &sme, "PAU001");
+        client.set_paused(&true);
+        client.fund(&investor, &TARGET);
+    }
+
+    #[test]
+    fn fund_succeeds_after_unpause() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        let investor = Address::generate(&env);
+        init_open(&client, &env, &admin, &sme, "PAU002");
+        client.set_paused(&true);
+        assert!(client.is_paused());
+        client.set_paused(&false);
+        assert!(!client.is_paused());
+    }
+
+    // ---------------------------------------------------------------------------
+    // is_paused is O(1) read-only — does not mutate storage
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn is_paused_is_read_only() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        default_init(&client, &env, &admin, &sme);
+        assert!(!client.is_paused());
+        client.set_paused(&true);
+        assert!(client.is_paused());
+    }
+
+    // ---------------------------------------------------------------------------
+    // fund blocked when paused
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn fund_blocked_when_paused() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        default_init(&client, &env, &admin, &sme);
+        client.set_paused(&true);
+        let investor = Address::generate(&env);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.fund(&investor, &100);
+        }));
+        assert!(result.is_err(), "fund should panic when paused");
+    }
+
+    // ---------------------------------------------------------------------------
+    // fund succeeds after unpause
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn fund_succeeds_after_unpause() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        default_init(&client, &env, &admin, &sme);
+        client.set_paused(&true);
+        client.set_paused(&false);
+        let investor = Address::generate(&env);
+        client.fund(&investor, &100);
+    }
+
+    // ---------------------------------------------------------------------------
+    // settle blocked when paused
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn settle_blocked_when_paused() {
+        let env = Env::default();
+        let (client, admin, sme) = setup(&env);
+        default_init(&client, &env, &admin, &sme);
+        let investor = Address::generate(&env);
+        client.fund(&investor, &100_000_000_000i128);
+        client.set_paused(&true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.settle();
+        }));
+        assert!(result.is_err(), "settle should panic when paused");
+    }
+
+    // ---------------------------------------------------------------------------
+    // settle succeeds after unpause
+    // ---------------------------------------------------------------------------
     let escrow = client.fund(&investor, &TARGET);
     assert_eq!(escrow.status, 1);
 }
@@ -332,55 +332,19 @@ fn settle_succeeds_after_unpause() {
 // withdraw blocked when paused
 // ---------------------------------------------------------------------------
 #[test]
-fn withdraw_blocked_when_paused() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100_000_000_000i128);
-    client.set_paused(&true);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.withdraw();
-    }));
-    assert!(result.is_err(), "withdraw should panic when paused");
-}
-
 // ---------------------------------------------------------------------------
 // withdraw succeeds after unpause
 // ---------------------------------------------------------------------------
 #[test]
-fn withdraw_succeeds_after_unpause() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100_000_000_000i128);
-    client.set_paused(&true);
-    client.set_paused(&false);
-    client.withdraw();
-}
-
 // ---------------------------------------------------------------------------
 // claim_investor_payout blocked when paused
 // ---------------------------------------------------------------------------
 #[test]
-fn claim_investor_payout_blocked_when_paused() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100_000_000_000i128);
-    client.settle();
-    client.set_paused(&true);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.claim_investor_payout(&investor);
-    }));
-    assert!(result.is_err(), "claim should panic when paused");
-}
-
 // ---------------------------------------------------------------------------
 // claim_investor_payout succeeds after unpause
 // ---------------------------------------------------------------------------
+#[test]
+fn claim_investor_payout_succeeds_after_unpause() {
     let investor = Address::generate(&env);
     init_funded(&client, &env, &admin, &sme, &investor, "PAU008");
     client.set_paused(&true);
@@ -447,12 +411,6 @@ fn claim_investor_payout_succeeds_after_unpause() {
     client.claim_investor_payout(&investor);
 }
 
-// ---------------------------------------------------------------------------
-// Read views (is_paused, get_escrow, get_version) are unaffected by pause
-// ---------------------------------------------------------------------------
-    assert!(client.is_investor_claimed(&investor));
-}
-
 // ── 7. Read-only views unaffected by pause ───────────────────────────────────
 
 #[test]
@@ -489,9 +447,14 @@ fn non_admin_cannot_set_paused() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// set_paused true when already true is a no-op (no crash)
-// ---------------------------------------------------------------------------
+// ── 7. Read-only views unaffected by pause (funded) ──────────────────────────
+
+#[test]
+fn read_views_unaffected_by_pause_on_funded_escrow() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
     let investor = Address::generate(&env);
     init_funded(&client, &env, &admin, &sme, &investor, "PAU013");
 
@@ -628,9 +591,12 @@ fn set_paused_emits_event() {
     assert!(events.events().len() > 0, "expected events to be emitted");
 }
 
-// ---------------------------------------------------------------------------
-// Pause is orthogonal to legal hold — both can be set independently
-// ---------------------------------------------------------------------------
+// ── 10. set_paused emits detailed event ──────────────────────────────────────
+
+#[test]
+fn set_paused_emits_detailed_events() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
     let contract_id = client.address.clone();
     init_open(&client, &env, &admin, &sme, "PAU019");
 
