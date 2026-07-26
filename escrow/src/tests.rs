@@ -73,6 +73,7 @@ mod integration_status_guards;
 mod keys;
 mod legal_hold;
 mod migration_errors;
+mod paginated_views;
 mod pause;
 mod properties;
 mod reconciliation_lifecycle;
