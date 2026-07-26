@@ -5,13 +5,11 @@ use super::{
     assert_contract_error, default_init, deploy, deploy_with_id, free_addresses,
     install_stellar_asset_token, setup, StellarTestToken, MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
-use crate::{
-    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementReadiness, YieldTier,
-};
+use crate::LiquifactEscrow;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
     token::StellarAssetClient,
-    Address, Env, Event, String, Vec as SorobanVec,
+    Address, Env, String,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -26,48 +24,6 @@ fn fund_to_target(client: &super::LiquifactEscrowClient<'_>, env: &Env) -> Addre
     investor
 }
 
-fn setup_claim_env<'a>(
-    env: &'a Env,
-    invoice_id: &str,
-    target: i128,
-    yield_bps: i64,
-) -> (
-    super::LiquifactEscrowClient<'a>,
-    StellarTestToken<'a>,
-    Address,
-    Address,
-) {
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(env);
-    let (contract_id, client) = deploy_with_id(env);
-    let admin = Address::generate(env);
-    let sme = Address::generate(env);
-    let treasury = Address::generate(env);
-
-    client.init(
-        &admin,
-        &String::from_str(env, invoice_id),
-        &sme,
-        &target,
-        &yield_bps,
-        &0u64,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    (client, token, contract_id, treasury)
-}
-
 /// Set up an escrow backed by a real Stellar asset contract (SAC), fund it to
 /// target, and mint `TARGET` tokens into the escrow contract so `withdraw()` can
 /// actually transfer them.  Returns `(client, sme, sac_admin_client)`.
@@ -78,7 +34,6 @@ fn setup_funded_with_token<'a>(
     Address,
     StellarAssetClient<'a>,
 ) {
-    env.mock_all_auths();
     let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
     let token_id = sac.address();
     let sac_admin = StellarAssetClient::new(env, &token_id);
@@ -105,17 +60,14 @@ fn setup_funded_with_token<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
-    // Mint tokens to investor so fund() can transfer them into the escrow.
+    // Fund to target (accounting only — no real tokens yet).
     let investor = Address::generate(env);
-    sac_admin.mint(&investor, &TARGET);
     client.fund(&investor, &TARGET);
 
-    // The tokens are now in the escrow from the fund() transfer — no extra mint needed for withdraw().
+    // Mint funded_amount into the escrow contract so withdraw() has tokens to send.
+    sac_admin.mint(&escrow_id, &TARGET);
 
     (client, sme, sac_admin)
 }
