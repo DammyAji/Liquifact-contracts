@@ -146,6 +146,7 @@ use soroban_sdk::{
 };
 
 pub mod external_calls;
+mod keys;
 
 /// Current storage schema version written to [`DataKey::Version`] by [`LiquifactEscrow::init`].
 ///
@@ -1652,7 +1653,7 @@ impl LiquifactEscrow {
     fn funding_token_or_fail(env: &Env) -> Address {
         env.storage()
             .instance()
-            .get(&DataKey::FundingToken)
+            .get(&keys::funding_token())
             .unwrap_or_else(|| fail(env, EscrowError::FundingTokenNotSet))
     }
 
@@ -1863,7 +1864,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::FundingToken, &funding_token);
+            .set(&keys::funding_token(), &funding_token);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage()
             .instance()
@@ -1890,27 +1891,27 @@ impl LiquifactEscrow {
         let floor = min_contribution.unwrap_or(0);
         env.storage()
             .instance()
-            .set(&DataKey::MinContributionFloor, &floor);
+            .set(&keys::min_contribution_floor(), &floor);
         // Always persist the fee (even the `0` default) so `withdraw` reads never branch on absence.
         env.storage()
             .instance()
             .set(&DataKey::ProtocolFeeBps, &protocol_fee_bps);
         env.storage()
             .instance()
-            .set(&DataKey::UniqueFunderCount, &0u32);
+            .set(&keys::unique_funder_count(), &0u32);
 
         if let Some(cap) = max_per_investor {
             ensure(&env, cap > 0, EscrowError::MaxPerInvestorNotPositive);
             env.storage()
                 .instance()
-                .set(&DataKey::MaxPerInvestorCap, &cap);
+                .set(&keys::max_per_investor_cap(), &cap);
         }
 
         if let Some(cap) = max_unique_investors {
             ensure(&env, cap > 0, EscrowError::MaxUniqueInvestorsNotPositive);
             env.storage()
                 .instance()
-                .set(&DataKey::MaxUniqueInvestorsCap, &cap);
+                .set(&keys::max_unique_investors_cap(), &cap);
         }
 
         let delay = legal_hold_clear_delay.unwrap_or(0);
@@ -1938,7 +1939,7 @@ impl LiquifactEscrow {
             }
             env.storage()
                 .instance()
-                .set(&DataKey::FundingDeadline, &deadline);
+                .set(&keys::funding_deadline(), &deadline);
         }
 
         let invoice_sym = validate_invoice_id_string(&env, &invoice_id);
@@ -2337,12 +2338,12 @@ impl LiquifactEscrow {
 
     /// Get the optional funding deadline (ledger timestamp), returns None if not set.
     pub fn get_funding_deadline(env: Env) -> Option<u64> {
-        env.storage().instance().get(&DataKey::FundingDeadline)
+        env.storage().instance().get(&keys::funding_deadline())
     }
 
     /// Check if funding has expired (deadline set and now > deadline).
     pub fn is_funding_expired(env: Env) -> bool {
-        if let Some(deadline) = env.storage().instance().get(&DataKey::FundingDeadline) {
+        if let Some(deadline) = env.storage().instance().get(&keys::funding_deadline()) {
             env.ledger().timestamp() > deadline
         } else {
             false
@@ -2385,7 +2386,7 @@ impl LiquifactEscrow {
     pub fn get_min_contribution_floor(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::MinContributionFloor)
+            .get(&keys::min_contribution_floor())
             .unwrap_or(0)
     }
 
@@ -2408,13 +2409,13 @@ impl LiquifactEscrow {
     pub fn get_max_unique_investors_cap(env: Env) -> Option<u32> {
         env.storage()
             .instance()
-            .get(&DataKey::MaxUniqueInvestorsCap)
+            .get(&keys::max_unique_investors_cap())
     }
 
     /// Optional cap on total principal for a single investor address.
     /// Absent ⇒ unlimited. Enforced on every deposit.
     pub fn get_max_per_investor_cap(env: Env) -> Option<i128> {
-        env.storage().instance().get(&DataKey::MaxPerInvestorCap)
+        env.storage().instance().get(&keys::max_per_investor_cap())
     }
 
     /// Distinct funders counted so far (each address counted once when it first receives principal).
@@ -2424,7 +2425,7 @@ impl LiquifactEscrow {
     pub fn get_unique_funder_count(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::UniqueFunderCount)
+            .get(&keys::unique_funder_count())
             .unwrap_or(0)
     }
 
@@ -2554,52 +2555,52 @@ impl LiquifactEscrow {
     fn get_persistent_investor_contribution(env: &Env, investor: Address) -> i128 {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorContribution(investor))
+            .get(&keys::investor_contribution(investor))
             .unwrap_or(0)
     }
 
     fn set_persistent_investor_contribution(env: &Env, investor: Address, amount: i128) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorContribution(investor), &amount);
+            .set(&keys::investor_contribution(investor), &amount);
     }
 
     fn get_persistent_investor_effective_yield(env: &Env, investor: Address) -> Option<i64> {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorEffectiveYield(investor))
+            .get(&keys::investor_effective_yield(investor))
     }
 
     fn set_persistent_investor_effective_yield(env: &Env, investor: Address, value: i64) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorEffectiveYield(investor), &value);
+            .set(&keys::investor_effective_yield(investor), &value);
     }
 
     fn get_persistent_investor_claim_not_before(env: &Env, investor: Address) -> u64 {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorClaimNotBefore(investor))
+            .get(&keys::investor_claim_not_before(investor))
             .unwrap_or(0)
     }
 
     fn set_persistent_investor_claim_not_before(env: &Env, investor: Address, value: u64) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorClaimNotBefore(investor), &value);
+            .set(&keys::investor_claim_not_before(investor), &value);
     }
 
     fn get_persistent_investor_claimed(env: &Env, investor: Address) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorClaimed(investor))
+            .get(&keys::investor_claimed(investor))
             .unwrap_or(false)
     }
 
     fn set_persistent_investor_claimed(env: &Env, investor: Address, value: bool) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorClaimed(investor), &value);
+            .set(&keys::investor_claimed(investor), &value);
     }
 
     /// Public API: contribution recorded for `investor` (persistent storage).
@@ -2645,7 +2646,7 @@ impl LiquifactEscrow {
         let index: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::InvestorIndex)
+            .get(&keys::investor_index())
             .unwrap_or_else(|| Vec::new(&env));
 
         let len = index.len();
@@ -2669,7 +2670,9 @@ impl LiquifactEscrow {
     /// funding call, including any over-funding past `funding_target`, plus the close ledger time
     /// and sequence used by off-chain auditors.
     pub fn get_funding_close_snapshot(env: Env) -> Option<FundingCloseSnapshot> {
-        env.storage().instance().get(&DataKey::FundingCloseSnapshot)
+        env.storage()
+            .instance()
+            .get(&keys::funding_close_snapshot())
     }
 
     /// Returns the ledger timestamp (seconds since Unix epoch) at which [`LiquifactEscrow::settle`]
@@ -3496,11 +3499,14 @@ impl LiquifactEscrow {
         // exactly once — mirroring the promotion logic in `fund`/`fund_with_commitment`.
         if escrow.funded_amount > 0
             && escrow.funded_amount >= new_target
-            && !env.storage().instance().has(&DataKey::FundingCloseSnapshot)
+            && !env
+                .storage()
+                .instance()
+                .has(&keys::funding_close_snapshot())
         {
             escrow.status = 1;
             env.storage().instance().set(
-                &DataKey::FundingCloseSnapshot,
+                &keys::funding_close_snapshot(),
                 &FundingCloseSnapshot {
                     total_principal: escrow.funded_amount,
                     funding_target: new_target,
@@ -3542,7 +3548,7 @@ impl LiquifactEscrow {
         let old_cap: Option<u32> = env
             .storage()
             .instance()
-            .get(&DataKey::MaxUniqueInvestorsCap);
+            .get(&keys::max_unique_investors_cap());
         ensure(
             &env,
             old_cap.is_some(),
@@ -3560,7 +3566,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::MaxUniqueInvestorsCap, &new_cap);
+            .set(&keys::max_unique_investors_cap(), &new_cap);
 
         MaxUniqueInvestorsCapLowered {
             name: symbol_short!("inv_cap"),
@@ -3590,7 +3596,7 @@ impl LiquifactEscrow {
         let old_cap: Option<u32> = env
             .storage()
             .instance()
-            .get(&DataKey::MaxUniqueInvestorsCap);
+            .get(&keys::max_unique_investors_cap());
         ensure(
             &env,
             old_cap.is_some(),
@@ -3602,7 +3608,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::MaxUniqueInvestorsCap, &new_cap);
+            .set(&keys::max_unique_investors_cap(), &new_cap);
 
         MaxUniqueInvestorsCapRaised {
             name: symbol_short!("raise_cap"),
@@ -3635,13 +3641,13 @@ impl LiquifactEscrow {
         let old_floor: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::MinContributionFloor)
+            .get(&keys::min_contribution_floor())
             .unwrap_or(0);
         ensure(&env, new_floor < old_floor, EscrowError::NewFloorNotLower);
 
         env.storage()
             .instance()
-            .set(&DataKey::MinContributionFloor, &new_floor);
+            .set(&keys::min_contribution_floor(), &new_floor);
 
         MinContributionFloorLowered {
             name: symbol_short!("floor_lo"),
@@ -3680,7 +3686,7 @@ impl LiquifactEscrow {
 
         guard_status_eq(&env, escrow.status, 0, EscrowError::CapLowerNotOpen);
 
-        let old_cap: Option<i128> = env.storage().instance().get(&DataKey::MaxPerInvestorCap);
+        let old_cap: Option<i128> = env.storage().instance().get(&keys::max_per_investor_cap());
         ensure(
             &env,
             old_cap.is_some(),
@@ -3696,7 +3702,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::MaxPerInvestorCap, &new_cap);
+            .set(&keys::max_per_investor_cap(), &new_cap);
 
         MaxPerInvestorCapRaised {
             name: symbol_short!("inv_cap"),
@@ -3954,7 +3960,7 @@ impl LiquifactEscrow {
         let floor: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::MinContributionFloor)
+            .get(&keys::min_contribution_floor())
             .unwrap_or(0);
         for i in 0..n {
             let (_, amount) = entries.get(i).unwrap();
@@ -4015,7 +4021,7 @@ impl LiquifactEscrow {
         let floor: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::MinContributionFloor)
+            .get(&keys::min_contribution_floor())
             .unwrap_or(0);
         if floor > 0 {
             ensure(
@@ -4040,7 +4046,7 @@ impl LiquifactEscrow {
         require_funding_open(&env, escrow.status);
 
         // Check funding deadline
-        if let Some(deadline) = env.storage().instance().get(&DataKey::FundingDeadline) {
+        if let Some(deadline) = env.storage().instance().get(&keys::funding_deadline()) {
             ensure(
                 &env,
                 env.ledger().timestamp() <= deadline,
@@ -4064,7 +4070,7 @@ impl LiquifactEscrow {
         if let Some(cap) = env
             .storage()
             .instance()
-            .get::<DataKey, i128>(&DataKey::MaxPerInvestorCap)
+            .get::<DataKey, i128>(&keys::max_per_investor_cap())
         {
             ensure(
                 &env,
@@ -4079,7 +4085,7 @@ impl LiquifactEscrow {
         let cur_funder_count: u32 = if prev == 0 {
             env.storage()
                 .instance()
-                .get(&DataKey::UniqueFunderCount)
+                .get(&keys::unique_funder_count())
                 .unwrap_or(0)
         } else {
             0 // prev != 0: count is not needed; skip the read entirely.
@@ -4089,7 +4095,7 @@ impl LiquifactEscrow {
             if let Some(cap) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u32>(&DataKey::MaxUniqueInvestorsCap)
+                .get::<DataKey, u32>(&keys::max_unique_investors_cap())
             {
                 ensure(
                     &env,
@@ -4153,7 +4159,11 @@ impl LiquifactEscrow {
 
         if escrow.status == 0 && escrow.funded_amount >= escrow.funding_target {
             escrow.status = 1;
-            if !env.storage().instance().has(&DataKey::FundingCloseSnapshot) {
+            if !env
+                .storage()
+                .instance()
+                .has(&keys::funding_close_snapshot())
+            {
                 let snap = FundingCloseSnapshot {
                     total_principal: escrow.funded_amount,
                     funding_target: escrow.funding_target,
@@ -4162,7 +4172,7 @@ impl LiquifactEscrow {
                 };
                 env.storage()
                     .instance()
-                    .set(&DataKey::FundingCloseSnapshot, &snap);
+                    .set(&keys::funding_close_snapshot(), &snap);
             }
         }
 
@@ -4171,27 +4181,23 @@ impl LiquifactEscrow {
         if prev == 0 {
             env.storage()
                 .instance()
-                .set(&DataKey::UniqueFunderCount, &(cur_funder_count + 1));
+                .set(&keys::unique_funder_count(), &(cur_funder_count + 1));
 
             let mut index: Vec<Address> = env
                 .storage()
                 .instance()
-                .get(&DataKey::InvestorIndex)
+                .get(&keys::investor_index())
                 .unwrap_or_else(|| Vec::new(&env));
             index.push_back(investor.clone());
             env.storage()
                 .instance()
-                .set(&DataKey::InvestorIndex, &index);
+                .set(&keys::investor_index(), &index);
         }
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
         // 4. Token transfer
-        let token_addr = env
-            .storage()
-            .instance()
-            .get(&DataKey::FundingToken)
-            .unwrap_or_else(|| fail(&env, EscrowError::FundingTokenNotSet));
+        let token_addr = Self::funding_token_or_fail(&env);
         let this = env.current_contract_address();
 
         #[cfg(any(test, feature = "testutils"))]
@@ -4252,7 +4258,11 @@ impl LiquifactEscrow {
         escrow.status = 1;
 
         // Write FundingCloseSnapshot if not already present.
-        if !env.storage().instance().has(&DataKey::FundingCloseSnapshot) {
+        if !env
+            .storage()
+            .instance()
+            .has(&keys::funding_close_snapshot())
+        {
             let snap = FundingCloseSnapshot {
                 total_principal: escrow.funded_amount,
                 funding_target: escrow.funding_target,
@@ -4261,7 +4271,7 @@ impl LiquifactEscrow {
             };
             env.storage()
                 .instance()
-                .set(&DataKey::FundingCloseSnapshot, &snap);
+                .set(&keys::funding_close_snapshot(), &snap);
         }
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
@@ -4401,11 +4411,7 @@ impl LiquifactEscrow {
             .checked_sub(fee)
             .unwrap_or_else(|| fail(&env, EscrowError::WithdrawNetArithmeticUnderflow));
 
-        let token_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::FundingToken)
-            .unwrap_or_else(|| fail(&env, EscrowError::FundingTokenNotSet));
+        let token_addr: Address = Self::funding_token_or_fail(&env);
 
         // Verify the contract holds enough before mutating state. The check uses the gross
         // `funded_amount` because the contract must fund both the SME payout and the treasury fee.
@@ -4652,7 +4658,7 @@ impl LiquifactEscrow {
         let Some(snap) = env
             .storage()
             .instance()
-            .get::<DataKey, FundingCloseSnapshot>(&DataKey::FundingCloseSnapshot)
+            .get::<DataKey, FundingCloseSnapshot>(&keys::funding_close_snapshot())
         else {
             return 0;
         };
@@ -4735,7 +4741,7 @@ impl LiquifactEscrow {
         let Some(snap) = env
             .storage()
             .instance()
-            .get::<DataKey, FundingCloseSnapshot>(&DataKey::FundingCloseSnapshot)
+            .get::<DataKey, FundingCloseSnapshot>(&keys::funding_close_snapshot())
         else {
             return 0;
         };
@@ -4832,7 +4838,7 @@ impl LiquifactEscrow {
         let old_deadline = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::FundingDeadline)
+            .get::<DataKey, u64>(&keys::funding_deadline())
             .unwrap_or_else(|| fail(&env, EscrowError::FundingDeadlineNotExtended));
 
         ensure(
@@ -4855,7 +4861,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::FundingDeadline, &new_deadline);
+            .set(&keys::funding_deadline(), &new_deadline);
         env.storage().instance().extend_ttl(
             INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
             INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
@@ -5014,22 +5020,22 @@ impl LiquifactEscrow {
             );
             // Extend persistent TTL for per-investor persistent keys used by this contract.
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorContribution(addr.clone()),
+                &keys::investor_contribution(addr.clone()),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorEffectiveYield(addr.clone()),
+                &keys::investor_effective_yield(addr.clone()),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorClaimNotBefore(addr.clone()),
+                &keys::investor_claim_not_before(addr.clone()),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorClaimed(addr.clone()),
+                &keys::investor_claimed(addr.clone()),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
@@ -5461,11 +5467,11 @@ impl LiquifactEscrow {
             let cur: u32 = env
                 .storage()
                 .instance()
-                .get(&DataKey::UniqueFunderCount)
+                .get(&keys::unique_funder_count())
                 .unwrap_or(0);
             env.storage()
                 .instance()
-                .set(&DataKey::UniqueFunderCount, &cur.saturating_sub(1));
+                .set(&keys::unique_funder_count(), &cur.saturating_sub(1));
         }
 
         // 8. Persist updated escrow.
