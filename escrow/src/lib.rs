@@ -294,20 +294,38 @@ pub const INSTANCE_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 
 /// [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] (equal to this constant today).
 pub const PERSISTENT_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 ledger/sec.
 
-/// Inclusive lower bound for [`LiquifactEscrow::set_storage_limit`].
-///
-/// `0` is rejected: a zero ledger extension is a no-op that wastes the call budget.
-pub const MIN_STORAGE_LIMIT_LEDGERS: u32 = 1;
+/// Default maximum duration (seconds) an operational pause ([`DataKey::Paused`]) may remain
+/// active before it auto-expires for gate-checking purposes. `0` = unlimited, which reproduces
+/// the legacy (pre-configurable) behavior exactly: a pause set with no duration limit configured
+/// blocks gated entrypoints until an admin explicitly calls [`LiquifactEscrow::set_paused`] with
+/// `active = false`.
+pub const DEFAULT_PAUSE_MAX_DURATION_SECS: u64 = 0;
 
-/// Inclusive upper bound for [`LiquifactEscrow::set_storage_limit`].
-///
-/// Caps rent cost from an accidentally huge TTL extension (~30 days at the contract's
-/// "1 ledger/sec" model used elsewhere for TTL constants).
-pub const MAX_STORAGE_LIMIT_LEDGERS: u32 = 2_592_000;
+/// Minimum non-zero value accepted by [`LiquifactEscrow::set_pause_max_duration`].
+/// Prevents configuring a duration so short it defeats the purpose of the incident-response
+/// circuit breaker.
+pub const MIN_PAUSE_MAX_DURATION_SECS: u64 = 3_600; // 1 hour
 
-// Instance and persistent defaults stay equal so a single [`DataKey::StorageLimit`]
-// override applies uniformly to both storage kinds.
-const _: () = assert!(INSTANCE_TTL_MIN_EXTENSION_LEDGERS == PERSISTENT_TTL_MIN_EXTENSION_LEDGERS);
+/// Maximum value accepted by [`LiquifactEscrow::set_pause_max_duration`].
+pub const MAX_PAUSE_MAX_DURATION_SECS: u64 = 7_776_000; // 90 days
+
+/// Default maximum number of [`LiquifactEscrow::set_paused`] calls allowed within
+/// [`DataKey::PauseToggleWindowSecs`]. `0` = unlimited, reproducing legacy behavior: no rate
+/// limit on how often the pause can be toggled.
+pub const DEFAULT_PAUSE_TOGGLE_LIMIT: u32 = 0;
+
+/// Minimum non-zero toggle count accepted by [`LiquifactEscrow::set_pause_rate_limit`].
+pub const MIN_PAUSE_TOGGLE_LIMIT: u32 = 1;
+
+/// Maximum toggle count accepted by [`LiquifactEscrow::set_pause_rate_limit`].
+pub const MAX_PAUSE_TOGGLE_LIMIT: u32 = 1_000;
+
+/// Minimum rate-limit window (seconds) accepted by [`LiquifactEscrow::set_pause_rate_limit`]
+/// when a non-zero toggle limit is configured.
+pub const MIN_PAUSE_TOGGLE_WINDOW_SECS: u64 = 60; // 1 minute
+
+/// Maximum rate-limit window (seconds) accepted by [`LiquifactEscrow::set_pause_rate_limit`].
+pub const MAX_PAUSE_TOGGLE_WINDOW_SECS: u64 = 7_776_000; // 90 days
 
 /// Stable typed errors emitted by LiquiFact escrow entrypoints.
 ///
@@ -628,9 +646,23 @@ pub enum EscrowError {
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
 
-    /// [`LiquifactEscrow::set_storage_limit`] received a value outside
-    /// [`MIN_STORAGE_LIMIT_LEDGERS`]..=[`MAX_STORAGE_LIMIT_LEDGERS`].
-    StorageLimitOutOfRange = 223,
+    /// [`LiquifactEscrow::set_pause_max_duration`] received a nonzero value outside
+    /// [`MIN_PAUSE_MAX_DURATION_SECS`, `MAX_PAUSE_MAX_DURATION_SECS`].
+    PauseMaxDurationOutOfRange = 223,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a nonzero `max_toggles` outside
+    /// [`MIN_PAUSE_TOGGLE_LIMIT`, `MAX_PAUSE_TOGGLE_LIMIT`].
+    PauseToggleLimitOutOfRange = 224,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a `window_secs` outside
+    /// [`MIN_PAUSE_TOGGLE_WINDOW_SECS`, `MAX_PAUSE_TOGGLE_WINDOW_SECS`] while `max_toggles > 0`.
+    PauseToggleWindowOutOfRange = 225,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received `max_toggles == 0` paired with a
+    /// nonzero `window_secs`, or vice versa. Both must be zero together (disabled) or both
+    /// nonzero (enabled).
+    PauseRateLimitInvalidCombination = 226,
+    /// [`LiquifactEscrow::set_paused`] blocked because the configured pause-toggle rate limit
+    /// was already reached within the current window. Wait for the window to roll over or ask
+    /// the admin to raise the limit via [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleRateLimitExceeded = 227,
 }
 
 #[inline(always)]
@@ -953,11 +985,28 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
-    /// Admin-configured storage TTL extension horizon in ledgers, applied by
-    /// [`LiquifactEscrow::bump_ttl`] and funding-deadline TTL top-ups.
-    /// Absent ⇒ falls back to [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] (preserves
-    /// pre-configurable behaviour). Updated via [`LiquifactEscrow::set_storage_limit`].
-    StorageLimit,
+    /// Optional cap (seconds) on how long [`DataKey::Paused`] may remain active before
+    /// [`LiquifactEscrow::is_paused`] and the pause gates treat it as expired. Absent ⇒ `0`
+    /// (unlimited), identical to pre-existing behavior. Set via
+    /// [`LiquifactEscrow::set_pause_max_duration`].
+    PauseMaxDurationSecs,
+    /// Ledger timestamp recorded on the most recent `set_paused(true)` call; paired with
+    /// [`DataKey::PauseMaxDurationSecs`] to compute auto-expiry. Absent ⇒ pause was never
+    /// activated.
+    PausedAt,
+    /// Optional cap on the number of [`LiquifactEscrow::set_paused`] calls allowed within
+    /// [`DataKey::PauseToggleWindowSecs`]. Absent ⇒ `0` (unlimited), identical to pre-existing
+    /// behavior. Set via [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleLimit,
+    /// Rolling rate-limit window length (seconds), paired with [`DataKey::PauseToggleLimit`].
+    /// Absent ⇒ `0`.
+    PauseToggleWindowSecs,
+    /// Ledger timestamp when the current pause-toggle rate-limit window started.
+    /// Absent ⇒ no window open yet (next `set_paused` call starts one).
+    PauseToggleWindowStart,
+    /// Number of [`LiquifactEscrow::set_paused`] calls recorded within the current rate-limit
+    /// window. Absent ⇒ `0`.
+    PauseToggleCountInWindow,
 }
 
 // --- Data types ---
@@ -1468,6 +1517,32 @@ pub struct PausedChanged {
     pub active: u32,
 }
 
+/// Emitted by [`LiquifactEscrow::set_pause_max_duration`] whenever the configured auto-expiry
+/// duration for [`DataKey::Paused`] changes.
+#[contractevent]
+pub struct PauseMaxDurationUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub old_value: u64,
+    pub new_value: u64,
+}
+
+/// Emitted by [`LiquifactEscrow::set_pause_rate_limit`] whenever the pause-toggle rate limit
+/// or its window changes.
+#[contractevent]
+pub struct PauseRateLimitUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub old_limit: u32,
+    pub new_limit: u32,
+    pub old_window_secs: u64,
+    pub new_window_secs: u64,
+}
+
 #[contractevent]
 pub struct LegalHoldClearRequested {
     #[topic]
@@ -1807,11 +1882,43 @@ impl LiquifactEscrow {
     /// Read the operational pause flag ([`DataKey::Paused`]); defaults to `false` when unset.
     ///
     /// Orthogonal to [`LiquifactEscrow::legal_hold_active`] — neither flag affects the other.
+    ///
+    /// # Auto-expiry
+    /// When [`DataKey::PauseMaxDurationSecs`] is configured (nonzero) via
+    /// [`LiquifactEscrow::set_pause_max_duration`], a pause that has been active for at least
+    /// that many seconds (measured from [`DataKey::PausedAt`]) is treated as inactive here —
+    /// even though the stored `Paused` flag itself is left `true` until an admin explicitly
+    /// calls [`LiquifactEscrow::set_paused`]. This is a pure read computation (no storage
+    /// mutation), so it cannot violate the read-only-precondition invariant documented on
+    /// [ADR-002](docs/adr/ADR-002-auth-boundaries.md). Default (`0` / unset) reproduces the
+    /// legacy behavior exactly: a pause blocks gates indefinitely until explicitly cleared.
     fn paused_active(env: &Env) -> bool {
-        env.storage()
+        let stored: bool = env
+            .storage()
             .instance()
             .get(&DataKey::Paused)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if !stored {
+            return false;
+        }
+        let max_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseMaxDurationSecs)
+            .unwrap_or(DEFAULT_PAUSE_MAX_DURATION_SECS);
+        if max_duration == 0 {
+            return true;
+        }
+        let paused_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PausedAt)
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        match paused_at.checked_add(max_duration) {
+            Some(expires_at) => now < expires_at,
+            None => true,
+        }
     }
 
     /// Read the immutable funding token address, failing with [`EscrowError::FundingTokenNotSet`]
@@ -3612,10 +3719,73 @@ impl LiquifactEscrow {
     /// [`LiquifactEscrow::claim_investor_payout`]. Legal-hold state is neither read nor written.
     ///
     /// Emits [`PausedChanged`].
+    ///
+    /// # Rate limiting
+    /// When [`LiquifactEscrow::set_pause_rate_limit`] has configured a nonzero toggle limit,
+    /// each call to `set_paused` (in either direction) consumes one slot in the current rolling
+    /// window; once the limit is reached within the window, further calls fail with
+    /// [`EscrowError::PauseToggleRateLimitExceeded`] until the window rolls over. Default
+    /// (unconfigured) preserves legacy behavior: no rate limit.
+    ///
+    /// # Errors
+    /// - [`EscrowError::PauseToggleRateLimitExceeded`] if the configured toggle-rate limit was
+    ///   already reached within the current window.
     pub fn set_paused(env: Env, active: bool) {
         let escrow = Self::load_escrow_require_admin(&env);
 
+        let toggle_limit: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseToggleLimit)
+            .unwrap_or(DEFAULT_PAUSE_TOGGLE_LIMIT);
+        let now = env.ledger().timestamp();
+        let (window_start, window_count): (u64, u32) = if toggle_limit > 0 {
+            let window_secs: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PauseToggleWindowSecs)
+                .unwrap_or(0);
+            let stored_start: Option<u64> = env
+                .storage()
+                .instance()
+                .get(&DataKey::PauseToggleWindowStart);
+            let window_elapsed = match stored_start {
+                None => true,
+                Some(start) => now >= start.saturating_add(window_secs),
+            };
+            if window_elapsed {
+                (now, 0u32)
+            } else {
+                let count: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::PauseToggleCountInWindow)
+                    .unwrap_or(0);
+                (stored_start.unwrap(), count)
+            }
+        } else {
+            (now, 0u32)
+        };
+        if toggle_limit > 0 {
+            ensure(
+                &env,
+                window_count < toggle_limit,
+                EscrowError::PauseToggleRateLimitExceeded,
+            );
+        }
+
         env.storage().instance().set(&DataKey::Paused, &active);
+        if active {
+            env.storage().instance().set(&DataKey::PausedAt, &now);
+        }
+        if toggle_limit > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseToggleWindowStart, &window_start);
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseToggleCountInWindow, &(window_count + 1));
+        }
 
         PausedChanged {
             name: symbol_short!("paused"),
@@ -3623,6 +3793,166 @@ impl LiquifactEscrow {
             active: if active { 1 } else { 0 },
         }
         .publish(&env);
+    }
+
+    /// Set the maximum duration (seconds) [`DataKey::Paused`] may remain active before the
+    /// pause auto-expires for gate-checking purposes ([`LiquifactEscrow::is_paused`] and every
+    /// pause-gated entrypoint). Only the **current** [`InvoiceEscrow::admin`] may call.
+    ///
+    /// Pass `0` to disable the limit (unlimited pause duration — the legacy, pre-existing
+    /// behavior). A nonzero value must fall within
+    /// [`MIN_PAUSE_MAX_DURATION_SECS`, `MAX_PAUSE_MAX_DURATION_SECS`].
+    ///
+    /// # Errors
+    /// - [`EscrowError::PauseMaxDurationOutOfRange`] if `new_duration_secs` is nonzero and
+    ///   outside the configured bounds.
+    ///
+    /// # Events
+    /// Emits [`PauseMaxDurationUpdated`] with the old and new values.
+    pub fn set_pause_max_duration(env: Env, new_duration_secs: u64) -> u64 {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        if new_duration_secs != 0 {
+            ensure(
+                &env,
+                (MIN_PAUSE_MAX_DURATION_SECS..=MAX_PAUSE_MAX_DURATION_SECS)
+                    .contains(&new_duration_secs),
+                EscrowError::PauseMaxDurationOutOfRange,
+            );
+        }
+
+        let old_value: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseMaxDurationSecs)
+            .unwrap_or(DEFAULT_PAUSE_MAX_DURATION_SECS);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseMaxDurationSecs, &new_duration_secs);
+
+        PauseMaxDurationUpdated {
+            name: symbol_short!("pausemax"),
+            invoice_id: escrow.invoice_id,
+            old_value,
+            new_value: new_duration_secs,
+        }
+        .publish(&env);
+
+        new_duration_secs
+    }
+
+    /// Read the configured pause auto-expiry duration ([`DataKey::PauseMaxDurationSecs`]);
+    /// defaults to [`DEFAULT_PAUSE_MAX_DURATION_SECS`] (`0` = unlimited) when unset.
+    pub fn get_pause_max_duration(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PauseMaxDurationSecs)
+            .unwrap_or(DEFAULT_PAUSE_MAX_DURATION_SECS)
+    }
+
+    /// Set the pause-toggle rate limit: at most `max_toggles` calls to
+    /// [`LiquifactEscrow::set_paused`] within any `window_secs`-second rolling window. Only the
+    /// **current** [`InvoiceEscrow::admin`] may call.
+    ///
+    /// Pass `(0, 0)` to disable rate limiting (the legacy, pre-existing behavior). A nonzero
+    /// `max_toggles` must fall within [`MIN_PAUSE_TOGGLE_LIMIT`, `MAX_PAUSE_TOGGLE_LIMIT`] and
+    /// `window_secs` must fall within
+    /// [`MIN_PAUSE_TOGGLE_WINDOW_SECS`, `MAX_PAUSE_TOGGLE_WINDOW_SECS`].
+    ///
+    /// Reconfiguring resets the current rate-limit window so behavior after the call is always
+    /// predictable (no stale counts carried over from the prior configuration).
+    ///
+    /// # Errors
+    /// - [`EscrowError::PauseRateLimitInvalidCombination`] if exactly one of `max_toggles` /
+    ///   `window_secs` is zero.
+    /// - [`EscrowError::PauseToggleLimitOutOfRange`] if `max_toggles` is nonzero and outside
+    ///   bounds.
+    /// - [`EscrowError::PauseToggleWindowOutOfRange`] if `window_secs` is outside bounds while
+    ///   `max_toggles` is nonzero.
+    ///
+    /// # Events
+    /// Emits [`PauseRateLimitUpdated`] with the old and new limit/window.
+    pub fn set_pause_rate_limit(env: Env, max_toggles: u32, window_secs: u64) -> (u32, u64) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        if max_toggles == 0 || window_secs == 0 {
+            ensure(
+                &env,
+                max_toggles == 0 && window_secs == 0,
+                EscrowError::PauseRateLimitInvalidCombination,
+            );
+        } else {
+            ensure(
+                &env,
+                (MIN_PAUSE_TOGGLE_LIMIT..=MAX_PAUSE_TOGGLE_LIMIT).contains(&max_toggles),
+                EscrowError::PauseToggleLimitOutOfRange,
+            );
+            ensure(
+                &env,
+                (MIN_PAUSE_TOGGLE_WINDOW_SECS..=MAX_PAUSE_TOGGLE_WINDOW_SECS)
+                    .contains(&window_secs),
+                EscrowError::PauseToggleWindowOutOfRange,
+            );
+        }
+
+        let old_limit: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseToggleLimit)
+            .unwrap_or(DEFAULT_PAUSE_TOGGLE_LIMIT);
+        let old_window: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseToggleWindowSecs)
+            .unwrap_or(0);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleLimit, &max_toggles);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleWindowSecs, &window_secs);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PauseToggleWindowStart);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseToggleCountInWindow, &0u32);
+
+        PauseRateLimitUpdated {
+            name: symbol_short!("pause_rl"),
+            invoice_id: escrow.invoice_id,
+            old_limit,
+            new_limit: max_toggles,
+            old_window_secs: old_window,
+            new_window_secs: window_secs,
+        }
+        .publish(&env);
+
+        (max_toggles, window_secs)
+    }
+
+    /// Read the configured pause-toggle rate limit as `(max_toggles, window_secs)`; `(0, 0)`
+    /// means unlimited (the default).
+    pub fn get_pause_rate_limit(env: Env) -> (u32, u64) {
+        let limit: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseToggleLimit)
+            .unwrap_or(DEFAULT_PAUSE_TOGGLE_LIMIT);
+        let window: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseToggleWindowSecs)
+            .unwrap_or(0);
+        (limit, window)
+    }
+
+    /// Read the ledger timestamp of the most recent `set_paused(true)` call
+    /// ([`DataKey::PausedAt`]); `None` if the pause has never been activated.
+    pub fn get_paused_at(env: Env) -> Option<u64> {
+        env.storage().instance().get(&DataKey::PausedAt)
     }
 
     /// Set or clear compliance hold. Only the **current** [`InvoiceEscrow::admin`] may call.
