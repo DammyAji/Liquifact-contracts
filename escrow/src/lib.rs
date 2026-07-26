@@ -237,6 +237,9 @@ pub const MAX_REFUND_BATCH: u32 = 50;
 /// Upper bound on [`LiquifactEscrow::set_investors_allowlisted`] batch size.
 pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 
+/// Upper bound on [`LiquifactEscrow::bump_ttl`] batch size.
+pub const MAX_BUMP_TTL_BATCH: u32 = 32;
+
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
@@ -576,6 +579,11 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::bump_ttl`] received an empty allowlisted vector.
+    BumpTtlBatchEmpty = 223,
+    /// [`LiquifactEscrow::bump_ttl`] exceeded [`MAX_BUMP_TTL_BATCH`].
+    BumpTtlBatchTooLarge = 224,
 }
 
 #[inline(always)]
@@ -4972,6 +4980,14 @@ impl LiquifactEscrow {
     }
 
     pub fn bump_ttl(env: Env, allowlisted: Vec<Address>) {
+        let len = allowlisted.len();
+        ensure(&env, len > 0, EscrowError::BumpTtlBatchEmpty);
+        ensure(
+            &env,
+            len <= MAX_BUMP_TTL_BATCH,
+            EscrowError::BumpTtlBatchTooLarge,
+        );
+
         // Permissionless TTL extension.
         //
         // Invariant: Soroban's `extend_ttl` never shortens TTL; this entrypoint only extends.
