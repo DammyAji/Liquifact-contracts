@@ -1918,6 +1918,44 @@ fn auth_audit_append_attestation_requires_admin() {
 
 #[test]
 #[should_panic]
+fn auth_audit_revoke_attestation_digest_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.append_attestation_digest(&soroban_sdk::BytesN::from_array(&env, &[0u8; 32]));
+    env.mock_auths(&[]);
+    client.revoke_attestation_digest(&0);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_revoke_attestation_digests_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.append_attestation_digest(&soroban_sdk::BytesN::from_array(&env, &[0u8; 32]));
+    let indices = soroban_sdk::vec![&env, 0u32];
+    env.mock_auths(&[]);
+    client.revoke_attestation_digests(&indices);
+}
+
+#[test]
+#[should_panic]
+fn auth_audit_unrevoke_attestation_digest_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.append_attestation_digest(&soroban_sdk::BytesN::from_array(&env, &[0u8; 32]));
+    client.revoke_attestation_digest(&0);
+    env.mock_auths(&[]);
+    client.unrevoke_attestation_digest(&0);
+}
+
+#[test]
+#[should_panic]
 fn auth_audit_set_allowlist_active_requires_admin() {
     let env = Env::default();
     env.mock_all_auths();

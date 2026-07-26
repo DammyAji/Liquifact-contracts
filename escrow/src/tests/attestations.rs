@@ -268,6 +268,17 @@ fn test_append_non_admin_panics() {
     client.append_attestation_digest(&digest(&env, 0x01));
 }
 
+/// Non-admin `try_append_attestation_digest` returns an authorization error.
+#[test]
+fn test_append_non_admin_returns_error() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    env.mock_auths(&[]);
+    assert!(client
+        .try_append_attestation_digest(&digest(&env, 0x01))
+        .is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Interaction: primary hash and append log are independent
 // ---------------------------------------------------------------------------
@@ -398,6 +409,33 @@ fn test_revoke_non_admin_returns_error() {
     env.mock_auths(&[]);
     // Any error (not Ok) satisfies the auth-rejection requirement.
     assert!(client.try_revoke_attestation_digest(&0).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// revoke_attestation_digests — batch revocation auth
+// ---------------------------------------------------------------------------
+
+/// Non-admin caller must not be able to batch-revoke.
+#[test]
+#[should_panic]
+fn test_revoke_digests_non_admin_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    let indices = soroban_sdk::vec![&env, 0u32];
+    env.mock_auths(&[]);
+    client.revoke_attestation_digests(&indices);
+}
+
+/// Non-admin `try_revoke_attestation_digests` returns an error.
+#[test]
+fn test_revoke_digests_non_admin_returns_error() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    let indices = soroban_sdk::vec![&env, 0u32];
+    env.mock_auths(&[]);
+    assert!(client.try_revoke_attestation_digests(&indices).is_err());
 }
 
 // ---------------------------------------------------------------------------
