@@ -793,6 +793,15 @@ Returns the yield-tier ladder configured at `init`, or an empty `Vec` when no ti
 - **Empty vec** — returned for both "no tiers passed at init" and "legacy instance predating tier support"; callers must not treat an empty result as an error.
 - **Pure read** — no auth required, no state mutation.
 
+## `get_yield_tiers_page(start, limit) → Vec<YieldTier>`
+
+Returns a read-only paginated view of the configured yield-tier ladder using the same `start`/`limit` contract as the existing investor and allowlist read views.
+
+- **Start beyond the end** — returns an empty page.
+- **Limit zero** — returns an empty page.
+- **Limit above the pagination ceiling** — clamps to the shared pagination ceiling (`MAX_INVESTOR_READ_BATCH`).
+- **Ordering** — preserves the immutable tier-table order established at `init`.
+
 ### `YieldTier` fields
 
 | Field | Type | Description |
