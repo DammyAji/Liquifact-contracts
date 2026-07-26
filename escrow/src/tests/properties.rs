@@ -33,9 +33,7 @@ proptest! {
             &None,
             &None,
             &None,
-        &None,
-        &None,
-        &None::<i64>);
+        );
 
         let before = client.get_escrow().funded_amount;
         client.fund(&investor1, &amount1);
@@ -77,9 +75,7 @@ proptest! {
             &None,
             &None,
             &None,
-        &None,
-        &None,
-        &None::<i64>);
+        );
         prop_assert_eq!(escrow.status, 0);
 
         let after_fund = client.fund(&investor, &amount);
@@ -113,7 +109,6 @@ struct FundingStep {
     lock_secs: u64,
 }
 
-/// Property tests for funding accounting invariants (issue #325).
 proptest! {
     #[test]
     fn prop_funding_accounting_invariants_issue_325(
@@ -145,7 +140,7 @@ proptest! {
         let (token, treasury) = free_addresses(&env);
 
         let max_per_investor = if caps_present { Some(per_inv_cap.min(funding_target)) } else { None };
-        let max_unique_investors: Option<u32> = if caps_present { Some(uniq_cap.min(6)) } else { None };
+        let max_unique_investors = if caps_present { Some(uniq_cap.min(6) as u64) } else { None };
 
         // Optional tiered yield is not required for these invariants; keep it off.
         client.init(
@@ -163,10 +158,7 @@ proptest! {
             &max_unique_investors,
             &max_per_investor,
             &None,
-            &None,
-        &None,
-        &None,
-        &None::<i64>);
+        );
 
         let investors: Vec<Address> = (0..investor_count)
             .map(|_| Address::generate(&env))
@@ -182,12 +174,12 @@ proptest! {
         let mut expected_contribs: Vec<i128> = vec![0i128; investor_count];
         let mut expected_funded: i128 = 0;
 
+        #[allow(clippy::mutable_key_type)]
         let mut distinct_funders: BTreeSet<Address> = BTreeSet::new();
 
         // Track when the funded status should flip (first step where funded >= target).
         let mut expected_flip_at: Option<usize> = None;
         let mut actual_transitions_to_funded = 0u32;
-        let mut prev_status = client.get_escrow().status;
 
         for step in 0..seq_len {
             if client.get_escrow().status != 0 {
@@ -211,7 +203,7 @@ proptest! {
             }
             if expected_contribs[ix] == 0 {
                 if let Some(uc) = max_unique_investors {
-                    if distinct_funders.len() as u32 >= uc {
+                    if distinct_funders.len() as u64 >= uc {
                         break;
                     }
                 }
@@ -257,7 +249,7 @@ proptest! {
                 prop_assert!(expected_contribs[ix] <= cap);
             }
             if let Some(uc) = max_unique_investors {
-                prop_assert!(distinct_funders.len() as u32 <= uc);
+                prop_assert!(distinct_funders.len() as u64 <= uc);
             }
 
             // Invariant: status flip correctness.
@@ -301,8 +293,6 @@ proptest! {
 
                 break;
             }
-
-            prev_status = after.status;
         }
 
         // If we ever reached funded state, it must have happened exactly once.
@@ -342,9 +332,6 @@ fn prop_status_transitions_open_to_funded_only() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     let initial = client.get_escrow();
@@ -384,9 +371,6 @@ fn prop_status_settle_transition() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -425,9 +409,6 @@ fn prop_status_withdraw_transition() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     token.stellar.mint(&investor, &target);
@@ -470,9 +451,6 @@ fn prop_no_regression_from_funded_status() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -519,9 +497,6 @@ fn prop_no_regression_after_withdraw() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     token.stellar.mint(&investor, &target);
@@ -560,9 +535,6 @@ fn prop_settled_is_terminal_for_settle() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     client.fund(&investor, &target);
@@ -599,9 +571,6 @@ fn prop_withdrawn_is_terminal_for_withdraw() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     token.stellar.mint(&investor, &target);
@@ -638,9 +607,6 @@ fn prop_status_invariant_all_states_valid_range() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     assert!(client.get_escrow().status == 0);
@@ -682,9 +648,6 @@ fn prop_funded_amount_sum_of_contributions() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     let inv1 = Address::generate(&env);
@@ -736,9 +699,6 @@ fn prop_funded_amount_respects_funding_target() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     let fund_amount = target + excess;
@@ -778,9 +738,6 @@ fn prop_funded_amount_non_decreasing_across_multiple_funders() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     let amt1: i128 = 50_000_000_000i128;
@@ -834,9 +791,6 @@ fn prop_funded_amount_equals_contribution_sum_for_funded_escrow() {
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
 
     let amounts: [i128; 3] = [50_000_000_000i128, 100_000_000_000i128, 50_000_000_000i128];
@@ -1196,8 +1150,6 @@ fn funded_and_settled_escrow<'a>(
     client
 }
 
-/// Property: sum of all computed payouts never exceeds settle_pool.
-/// Covers single investor, equal splits, and prime-denominator splits.
 proptest! {
     #[test]
     fn prop_payout_sum_le_settle_pool(
