@@ -70,6 +70,7 @@ mod funding;
 mod init;
 mod integration;
 mod integration_status_guards;
+mod keys;
 mod legal_hold;
 mod migration_errors;
 mod pause;
