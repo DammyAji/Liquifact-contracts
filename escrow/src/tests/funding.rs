@@ -4829,6 +4829,45 @@ fn test_remaining_capacity_never_negative_when_overfunded() {
     assert_eq!(client.get_escrow().status, 1, "escrow must be funded");
 }
 
+#[test]
+fn test_remaining_capacity_saturates_to_zero_for_extreme_overfund_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, sme) = (Address::generate(&env), Address::generate(&env));
+    let client = deploy(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPMAX1"),
+        &sme,
+        &1i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &i128::MAX);
+    client.fund(&investor, &i128::MAX);
+
+    assert_eq!(client.get_remaining_funding_capacity(), 0);
+    assert_eq!(client.get_escrow().funded_amount, i128::MAX);
+}
+
 /// Test that capacity recomputes correctly after update_funding_target raises
 
 /// the target while the escrow is still open.

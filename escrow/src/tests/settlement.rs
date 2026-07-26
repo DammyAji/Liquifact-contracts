@@ -222,6 +222,143 @@ fn withdraw_emits_event() {
     );
 }
 
+#[test]
+fn withdraw_extreme_amount_without_fee_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = super::LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "WMAXFEE0"),
+        &sme,
+        &1i128,
+        &0i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(0i64),
+    );
+
+    let investor = Address::generate(&env);
+    sac_admin.mint(&investor, &i128::MAX);
+    client.fund(&investor, &i128::MAX);
+    sac_admin.mint(&escrow_id, &i128::MAX);
+
+    let updated = client.withdraw();
+    assert_eq!(updated.status, 3u32);
+    assert_eq!(client.get_escrow().status, 3u32);
+}
+
+#[test]
+fn withdraw_extreme_amount_with_full_fee_net_zero_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = super::LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let amount = i128::MAX / 10_000;
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "WMAXFEE10000"),
+        &sme,
+        &1i128,
+        &0i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10_000i64),
+    );
+
+    let investor = Address::generate(&env);
+    sac_admin.mint(&investor, &amount);
+    client.fund(&investor, &amount);
+    sac_admin.mint(&escrow_id, &amount);
+
+    let updated = client.withdraw();
+    assert_eq!(updated.status, 3u32);
+    assert_eq!(sac.balance(&sme), 0);
+    assert_eq!(sac.balance(&treasury), amount);
+}
+
+#[test]
+fn withdraw_fee_overflow_rejected_with_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = super::LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let amount = i128::MAX / 10_000 + 1;
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "WMAXFEEOVER"),
+        &sme,
+        &1i128,
+        &0i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10_000i64),
+    );
+
+    let investor = Address::generate(&env);
+    sac_admin.mint(&investor, &amount);
+    client.fund(&investor, &amount);
+
+    assert_contract_error(client.try_withdraw(), EscrowError::WithdrawFeeArithmeticOverflow);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // `withdraw` — wrong-status guards
 // ──────────────────────────────────────────────────────────────────────────────
