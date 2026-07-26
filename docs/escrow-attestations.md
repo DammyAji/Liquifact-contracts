@@ -1,7 +1,9 @@
 # Escrow Attestations: KYC/KYB Operational Flows
 
-This document describes how the three attestation entrypoints on the LiquiFact escrow contract
+This document describes how the attestation entrypoints on the LiquiFact escrow contract
 are used in KYC (Know Your Customer) and KYB (Know Your Business) compliance workflows.
+
+See [`docs/attestation-invariants.md`](attestation-invariants.md) for the formal invariants and enforcement rules.
 
 ## What this is — and what it is not
 
@@ -65,6 +67,14 @@ This is a pure read view for integrators that want to warn before the log fills.
 values satisfy `used + remaining == MAX_ATTESTATION_APPEND_ENTRIES`, and `remaining` drops to
 `0` once the log is full and the next append would fail with
 `AttestationAppendLogCapacityReached`.
+
+### `get_revoked_attestation_digests(start: u32, limit: u32)`
+
+Returns a page of revoked append-log entries. `start` is zero-based and may point at or beyond
+the end of the log, in which case the result is empty. `limit` must be in
+`1..=MAX_ATTESTATION_READ_PAGE` (20); zero returns `AttestationReadLimitZero` (57), and a value
+above the maximum returns `AttestationReadLimitTooLarge` (58). Valid limits are applied exactly
+and are never silently clamped.
 
 ### `revoke_attestation_digest(index: u32)`
 
@@ -164,7 +174,7 @@ The append log entry and its digest are unaffected. After a successful unrevoke,
 active by indexers.
 
 **Errors** with `AttestationIndexOutOfRange` (52) if `index >= log.len()`, or
-`AttestationNotRevoked` (53) if the index is not currently revoked.
+`AttestationNotRevoked` (56) if the index is not currently revoked.
 
 ---
 
@@ -380,7 +390,7 @@ storage key; the digest at index N is unchanged.
 
 - **Unrevoke is admin-only:** `unrevoke_attestation_digest` is gated by `require_auth` on
   `InvoiceEscrow::admin`. ADR-002 guard ordering is preserved: range and state checks run
-  before auth so typed errors (`AttestationIndexOutOfRange` = 52, `AttestationNotRevoked` = 53)
+  before auth so typed errors (`AttestationIndexOutOfRange` = 52, `AttestationNotRevoked` = 56)
   are surfaced cleanly.
 
 - **Unrevoke is idempotent in round-trips:** revoke → unrevoke → revoke is valid. Each

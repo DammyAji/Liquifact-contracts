@@ -1,6 +1,8 @@
 use super::super::external_calls::transfer_funding_token_with_balance_checks;
 use super::*;
-use crate::{CollateralRecordedEvt, DataKey, InvoiceEscrow, LegalHoldChanged};
+use crate::{
+    CollateralClearedEvt, CollateralRecordedEvt, DataKey, InvoiceEscrow, LegalHoldChanged,
+};
 use soroban_sdk::{
     contract, contractimpl, symbol_short, vec, IntoVal, Map, MuxedAddress, Symbol, TryFromVal, Val,
 };
@@ -259,11 +261,11 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
 
     let settled_escrow = client.settle();
     assert_eq!(
-        settled_escrow.status, 2,
+        settled_escrow.escrow.status, 2,
         "Should transition to Settled status"
     );
     assert_eq!(
-        settled_escrow.funded_amount, total_funded,
+        settled_escrow.escrow.funded_amount, total_funded,
         "Funded amount should be preserved"
     );
 
@@ -447,7 +449,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
 
     // Settle the escrow
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 
     // Verify claim locks are enforced
     let current_time = env.ledger().timestamp();
@@ -669,6 +671,58 @@ fn test_collateral_replacement_event_contains_prior_amount() {
 }
 
 #[test]
+fn test_collateral_clear_emits_one_dedicated_event_with_cleared_payload() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::Event;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "COLEV003");
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(
+            &DataKey::Escrow,
+            &InvoiceEscrow {
+                invoice_id: invoice_id.clone(),
+                admin,
+                sme_address: sme,
+                amount: 10_000i128,
+                funding_target: 10_000i128,
+                funded_amount: 0i128,
+                yield_bps: 800i64,
+                maturity: 0u64,
+                status: 0u32,
+            },
+        );
+    });
+
+    let commitment = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
+    // Drain the record event before exercising the separate clear transition.
+    let _ = env.events().all();
+
+    client.clear_sme_collateral_commitment();
+    // Capture immediately: subsequent contract calls can replace the test event buffer.
+    let events = env.events().all().filter_by_contract(&contract_id);
+
+    assert_eq!(
+        events.events().len(),
+        1,
+        "clear must emit exactly one event"
+    );
+    let expected = CollateralClearedEvt {
+        name: symbol_short!("coll_clr"),
+        invoice_id,
+        asset: symbol_short!("USDC"),
+        amount: 5_000i128,
+        recorded_at: commitment.recorded_at,
+    };
+    assert_eq!(events.events()[0], expected.to_xdr(&env, &contract_id));
+}
+
+#[test]
 fn test_token_integration_assumptions_are_documented_in_readme() {
     let contents = include_str!("../../../docs/ESCROW_TOKEN_INTEGRATION_CHECKLIST.md");
     assert!(
@@ -807,7 +861,7 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
 
     let settled_state = client.settle();
     assert_eq!(
-        settled_state.status, 2,
+        settled_state.escrow.status, 2,
         "escrow should settle after hold is cleared"
     );
 

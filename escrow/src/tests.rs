@@ -23,8 +23,8 @@ use super::{
     EscrowFunded, EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingTargetUpdated,
     InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient, MaturityMaxHorizonUpdated,
     MaxUniqueInvestorsCapLowered, PrimaryAttestationBound, RegistryRefRebound, TreasuryDustSwept,
-    YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH,
-    SCHEMA_VERSION,
+    YieldResolution, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
+    MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
     symbol_short,
@@ -60,6 +60,7 @@ pub(crate) fn assert_contract_error<T, E>(
 mod admin;
 mod attestations;
 mod auth_matrix;
+mod batch_bump_ttl;
 mod cap_validation;
 #[rustfmt::skip]
 mod coverage;
@@ -69,12 +70,15 @@ mod funding;
 mod init;
 mod integration;
 mod integration_status_guards;
+mod keys;
 mod legal_hold;
 mod migration_errors;
+mod paginated_views;
 mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod yield_tier_overflow;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {

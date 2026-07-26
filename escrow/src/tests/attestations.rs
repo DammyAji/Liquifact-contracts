@@ -44,9 +44,30 @@ fn setup_with_init(env: &Env) -> (LiquifactEscrowClient<'_>, Address) {
     (client, admin)
 }
 
-fn attestation_log_stats(client: &LiquifactEscrowClient<'_>) -> (u32, u32) {
+fn attestation_log_stats(client: &LiquifactEscrowClient<'_>) -> AttestationLogStats {
     let used = client.get_attestation_append_log().len();
-    (used, MAX_ATTESTATION_APPEND_ENTRIES.saturating_sub(used))
+    AttestationLogStats {
+        used,
+        remaining: MAX_ATTESTATION_APPEND_ENTRIES.saturating_sub(used),
+    }
+}
+
+/// Snapshot of the attestation append-log capacity at a point in time.
+///
+/// Returned by the test helper `attestation_log_stats`.  Replaces the former
+/// `(u32, u32)` tuple so that call sites can reference fields by name instead
+/// of by position.
+///
+/// # Fields
+/// - `used`: number of entries currently in the append log.
+/// - `remaining`: free slots left before the log reaches
+///   [`MAX_ATTESTATION_APPEND_ENTRIES`] capacity.
+#[derive(Debug, PartialEq)]
+struct AttestationLogStats {
+    /// Entries currently written to the append log.
+    used: u32,
+    /// Free slots remaining before capacity is exhausted.
+    remaining: u32,
 }
 
 /// The number of free attestation append-log slots remaining.
@@ -151,9 +172,9 @@ fn test_append_log_empty_before_first_append() {
 fn test_attestation_log_stats_empty_before_first_append() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    let (used, remaining) = attestation_log_stats(&client);
-    assert_eq!(used, 0);
-    assert_eq!(remaining, MAX_ATTESTATION_APPEND_ENTRIES);
+    let stats = attestation_log_stats(&client);
+    assert_eq!(stats.used, 0);
+    assert_eq!(stats.remaining, MAX_ATTESTATION_APPEND_ENTRIES);
 }
 
 /// The stats view tracks partially filled logs without reading the full vector contents.
@@ -164,8 +185,8 @@ fn test_attestation_log_stats_tracks_partial_fill() {
     for i in 0u8..5 {
         client.append_attestation_digest(&digest(&env, i));
     }
-    let (used, remaining) = attestation_log_stats(&client);
-    assert_eq!(used, 5);
+    let stats = attestation_log_stats(&client);
+    assert_eq!(stats.used, 5);
     assert_eq!(
         remaining_attestation_slots(&client),
         MAX_ATTESTATION_APPEND_ENTRIES - 5
@@ -180,15 +201,15 @@ fn test_attestation_log_stats_full_and_after_capacity_error() {
     for i in 0u8..(MAX_ATTESTATION_APPEND_ENTRIES as u8) {
         client.append_attestation_digest(&digest(&env, i));
     }
-    let (used, remaining) = attestation_log_stats(&client);
-    assert_eq!(used, MAX_ATTESTATION_APPEND_ENTRIES);
+    let stats = attestation_log_stats(&client);
+    assert_eq!(stats.used, MAX_ATTESTATION_APPEND_ENTRIES);
     assert_eq!(remaining_attestation_slots(&client), 0);
 
     let result = client.try_append_attestation_digest(&digest(&env, 0xFF));
     assert_contract_error(result, EscrowError::AttestationAppendLogCapacityReached);
 
-    let (used, remaining) = attestation_log_stats(&client);
-    assert_eq!(used, MAX_ATTESTATION_APPEND_ENTRIES);
+    let stats = attestation_log_stats(&client);
+    assert_eq!(stats.used, MAX_ATTESTATION_APPEND_ENTRIES);
     assert_eq!(remaining_attestation_slots(&client), 0);
 }
 
@@ -266,6 +287,17 @@ fn test_append_non_admin_panics() {
     // Clear all mocks so auth is enforced for the next call.
     env.mock_auths(&[]);
     client.append_attestation_digest(&digest(&env, 0x01));
+}
+
+/// Non-admin `try_append_attestation_digest` returns an authorization error.
+#[test]
+fn test_append_non_admin_returns_error() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    env.mock_auths(&[]);
+    assert!(client
+        .try_append_attestation_digest(&digest(&env, 0x01))
+        .is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +430,33 @@ fn test_revoke_non_admin_returns_error() {
     env.mock_auths(&[]);
     // Any error (not Ok) satisfies the auth-rejection requirement.
     assert!(client.try_revoke_attestation_digest(&0).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// revoke_attestation_digests — batch revocation auth
+// ---------------------------------------------------------------------------
+
+/// Non-admin caller must not be able to batch-revoke.
+#[test]
+#[should_panic]
+fn test_revoke_digests_non_admin_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    let indices = soroban_sdk::vec![&env, 0u32];
+    env.mock_auths(&[]);
+    client.revoke_attestation_digests(&indices);
+}
+
+/// Non-admin `try_revoke_attestation_digests` returns an error.
+#[test]
+fn test_revoke_digests_non_admin_returns_error() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    let indices = soroban_sdk::vec![&env, 0u32];
+    env.mock_auths(&[]);
+    assert!(client.try_revoke_attestation_digests(&indices).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -770,15 +829,49 @@ fn test_revoked_digests_view_pagination_and_empty_past_end() {
 }
 
 #[test]
-#[ignore = "branch-specific latent failure"]
-fn test_revoked_digests_view_caps_limit() {
+fn test_revoked_digests_view_rejects_limit_over_max() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    for i in 0u8..10 {
+    assert_contract_error(
+        client.try_get_revoked_attestation_digests(
+            &0,
+            &(crate::MAX_ATTESTATION_READ_PAGE.saturating_add(1)),
+        ),
+        EscrowError::AttestationReadLimitTooLarge,
+    );
+}
+
+#[test]
+fn test_revoked_digests_view_rejects_zero_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    assert_contract_error(
+        client.try_get_revoked_attestation_digests(&0, &0),
+        EscrowError::AttestationReadLimitZero,
+    );
+}
+
+#[test]
+fn test_revoked_digests_view_accepts_min_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.revoke_attestation_digest(&0);
+
+    let page = client.get_revoked_attestation_digests(&0, &1);
+    assert_eq!(page.len(), 1);
+}
+
+#[test]
+fn test_revoked_digests_view_accepts_max_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..(crate::MAX_ATTESTATION_READ_PAGE as u8) {
         client.append_attestation_digest(&digest(&env, i));
         client.revoke_attestation_digest(&(i as u32));
     }
-    let page = client.get_revoked_attestation_digests(&0, &100);
+
+    let page = client.get_revoked_attestation_digests(&0, &crate::MAX_ATTESTATION_READ_PAGE);
     assert_eq!(page.len(), crate::MAX_ATTESTATION_READ_PAGE);
 }
 
@@ -973,4 +1066,221 @@ fn test_require_index_in_range_last_valid_index_at_max_capacity() {
         client.try_revoke_attestation_digest(&MAX_ATTESTATION_APPEND_ENTRIES),
         EscrowError::AttestationIndexOutOfRange,
     );
+}
+
+// ── Issue #800: get_attestation_digests (paginated enumeration) ──────────────
+
+/// Empty state: no records appended → returns empty vec, no panic.
+#[test]
+fn test_get_attestation_digests_empty_log() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let page = client.get_attestation_digests(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+/// start past the end of the log returns empty vec cleanly.
+#[test]
+fn test_get_attestation_digests_start_past_end() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.append_attestation_digest(&digest(&env, 0x02));
+
+    let page = client.get_attestation_digests(&100, &10);
+    assert_eq!(page.len(), 0);
+}
+
+/// limit == 0 returns empty vec cleanly.
+#[test]
+fn test_get_attestation_digests_zero_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    let page = client.get_attestation_digests(&0, &0);
+    assert_eq!(page.len(), 0);
+}
+
+/// Single page: fewer records than limit — returns all records with correct digests.
+#[test]
+fn test_get_attestation_digests_single_page_fewer_than_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d0 = digest(&env, 0x10);
+    let d1 = digest(&env, 0x20);
+    let d2 = digest(&env, 0x30);
+    client.append_attestation_digest(&d0);
+    client.append_attestation_digest(&d1);
+    client.append_attestation_digest(&d2);
+
+    let page = client.get_attestation_digests(&0, &10);
+    assert_eq!(page.len(), 3);
+    assert_eq!(page.get(0).unwrap().digest, d0);
+    assert!(!page.get(0).unwrap().revoked);
+    assert_eq!(page.get(1).unwrap().digest, d1);
+    assert!(!page.get(1).unwrap().revoked);
+    assert_eq!(page.get(2).unwrap().digest, d2);
+    assert!(!page.get(2).unwrap().revoked);
+}
+
+/// Single page: limit exactly equals number of records.
+#[test]
+fn test_get_attestation_digests_limit_equals_count() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..5 {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+    let page = client.get_attestation_digests(&0, &5);
+    assert_eq!(page.len(), 5);
+}
+
+/// Multi-page continuation: page through all records until exhausted.
+#[test]
+fn test_get_attestation_digests_multi_page_continuation() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let total: u32 = 7;
+    for i in 0u8..(total as u8) {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    let page_size: u32 = 3;
+    let mut collected: u32 = 0;
+    let mut start: u32 = 0;
+
+    loop {
+        let page = client.get_attestation_digests(&start, &page_size);
+        let got = page.len();
+        if got == 0 {
+            break;
+        }
+        // Verify digest values match what was appended at those indices.
+        for j in 0..got {
+            let abs_idx = start + j;
+            assert_eq!(page.get(j).unwrap().digest, digest(&env, abs_idx as u8));
+        }
+        collected += got;
+        start += got;
+    }
+
+    assert_eq!(collected, total);
+}
+
+/// Pagination ceiling clamp: requesting a limit above MAX_ATTESTATION_READ_PAGE
+/// returns at most MAX_ATTESTATION_READ_PAGE entries — no panic, no error.
+#[test]
+fn test_get_attestation_digests_ceiling_clamp() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    // Append more entries than the ceiling to make the clamp observable.
+    let to_append = MAX_ATTESTATION_READ_PAGE + 5;
+    for i in 0u8..(to_append as u8) {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    let page = client.get_attestation_digests(&0, &(to_append + 100));
+    assert_eq!(page.len(), MAX_ATTESTATION_READ_PAGE);
+}
+
+/// Revoked entries appear in the result with revoked == true;
+/// unrevoked entries appear with revoked == false.
+#[test]
+fn test_get_attestation_digests_reflects_revocation_status() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d0 = digest(&env, 0xAA);
+    let d1 = digest(&env, 0xBB);
+    let d2 = digest(&env, 0xCC);
+    client.append_attestation_digest(&d0);
+    client.append_attestation_digest(&d1);
+    client.append_attestation_digest(&d2);
+    client.revoke_attestation_digest(&1);
+
+    let page = client.get_attestation_digests(&0, &10);
+    assert_eq!(page.len(), 3);
+    assert_eq!(page.get(0).unwrap().digest, d0);
+    assert!(!page.get(0).unwrap().revoked);
+    assert_eq!(page.get(1).unwrap().digest, d1);
+    assert!(page.get(1).unwrap().revoked); // revoked
+    assert_eq!(page.get(2).unwrap().digest, d2);
+    assert!(!page.get(2).unwrap().revoked);
+}
+
+/// Revocation status is live: unrevoke after revoke is reflected immediately.
+#[test]
+fn test_get_attestation_digests_live_revocation_state() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d = digest(&env, 0xDD);
+    client.append_attestation_digest(&d);
+
+    client.revoke_attestation_digest(&0);
+    let page = client.get_attestation_digests(&0, &1);
+    assert!(page.get(0).unwrap().revoked);
+
+    client.unrevoke_attestation_digest(&0);
+    let page = client.get_attestation_digests(&0, &1);
+    assert!(!page.get(0).unwrap().revoked);
+}
+
+/// start == log.len() - 1 returns exactly the last entry.
+#[test]
+fn test_get_attestation_digests_start_at_last_entry() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..5 {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+    let page = client.get_attestation_digests(&4, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().digest, digest(&env, 4));
+}
+
+/// Requesting a second page starting exactly at log.len() returns empty vec.
+#[test]
+fn test_get_attestation_digests_continuation_past_end_is_empty() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..3 {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+    // First page returns all 3 entries.
+    let page1 = client.get_attestation_digests(&0, &3);
+    assert_eq!(page1.len(), 3);
+    // Next-page start == log.len() → empty.
+    let page2 = client.get_attestation_digests(&3, &3);
+    assert_eq!(page2.len(), 0);
+}
+
+/// Full log (MAX_ATTESTATION_APPEND_ENTRIES entries): paging through returns all
+/// entries with correct order and no duplicates.
+#[test]
+fn test_get_attestation_digests_full_log_paged_completely() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..(MAX_ATTESTATION_APPEND_ENTRIES as u8) {
+        client.append_attestation_digest(&digest(&env, i));
+    }
+
+    let page_size = MAX_ATTESTATION_READ_PAGE;
+    let mut start: u32 = 0;
+    let mut seen: u32 = 0;
+
+    loop {
+        let page = client.get_attestation_digests(&start, &page_size);
+        let got = page.len();
+        if got == 0 {
+            break;
+        }
+        for j in 0..got {
+            let abs_idx = start + j;
+            assert_eq!(page.get(j).unwrap().digest, digest(&env, abs_idx as u8));
+        }
+        seen += got;
+        start += got;
+    }
+
+    assert_eq!(seen, MAX_ATTESTATION_APPEND_ENTRIES);
 }

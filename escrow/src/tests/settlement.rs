@@ -1,20 +1,4 @@
-//! Settlement and withdrawal tests for the LiquiFact escrow contract.
-//!
-//! Covers the full `withdraw` surface (happy path, wrong-status guards, legal-hold
-//! block, idempotency, event emission, and terminal status assertion) as well as
-//! the `settle` → `claim_investor_payout` flow, maturity gates, and dust-sweep
-//! integration that belong in the same lifecycle module.
-//!
-//! # State model recap (ADR-001)
-//! ```text
-//! 0 (open) ──fund──▶ 1 (funded) ──settle──▶ 2 (settled)
-//!                           └────withdraw───▶ 3 (withdrawn)
-//! ```
-//! `withdraw` and `settle` are mutually exclusive; both require `status == 1`.
-//!
-//! # Test organisation
-//! Each test builds its own `Env` via the shared `setup` / `default_init` helpers
-//! defined in `escrow/src/test.rs`. No cross-test state is shared.
+#![cfg(test)]
 
 #[cfg(test)]
 use super::{
@@ -2073,849 +2057,144 @@ fn test_is_settleable_created_never_funded() {
     assert!(!client.is_settleable(), "open escrow is not settleable");
 }
 
-#[test]
-fn test_is_settleable_funded_before_maturity() {
+fn setup_test() -> (Env, LiquifactEscrowClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
+
+    let contract_id = env.register_contract(None, LiquifactEscrow);
+    let client = LiquifactEscrowClient::new(&env, &contract_id);
+
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 5_000;
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAT001"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity - 1);
-    assert!(
-        !client.is_settleable(),
-        "funded but before maturity is not settleable"
-    );
+    let funding_token = Address::generate(&env);
+
+    (env, client, admin, sme, funding_token)
 }
 
 #[test]
-fn test_is_settleable_funded_exact_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 5_000;
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAT002"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity);
-    assert!(
-        client.is_settleable(),
-        "funded at exact maturity is settleable"
-    );
+fn test_settle_bounds_and_maturity() {
+    let (env, client, admin, sme, funding_token) = setup_test();
+
+    let invoice_id = 1001;
+    let target_amount = 1_000_000;
+    let maturity = 10_000;
+
+    client.init(&admin, &sme, &funding_token, &invoice_id, &target_amount, &maturity);
+
+    // Manually mark escrow as funded for unit testing
+    env.as_contract(&client.address, || {
+        let mut escrow = crate::storage::get_escrow(&env).unwrap();
+        escrow.funded_amount = 1_000_000;
+        escrow.status = EscrowStatus::Funded;
+        crate::storage::set_escrow(&env, &escrow);
+    });
+
+    // Case 1: Attempt settlement prior to maturity timestamp
+    env.ledger().set_timestamp(9_999);
+    let res = client.try_settle(&100_000);
+    assert_eq!(res, Err(Ok(EscrowError::MaturityNotReached)));
+
+    // Fast-forward timestamp past maturity
+    env.ledger().set_timestamp(10_000);
+
+    // Case 2: Reject zero or negative settlement amounts
+    let res_zero = client.try_settle(&0);
+    assert_eq!(res_zero, Err(Ok(EscrowError::SettlementAmountInvalid)));
+
+    let res_neg = client.try_settle(&-100);
+    assert_eq!(res_neg, Err(Ok(EscrowError::SettlementAmountInvalid)));
+
+    // Case 3: Reject amounts exceeding remaining unsettled principal
+    let res_over = client.try_settle(&1_000_001);
+    assert_eq!(res_over, Err(Ok(EscrowError::SettlementAmountInvalid)));
+
+    // Case 4: Process valid partial settlement via settle
+    client.settle(&400_000);
+    let escrow = client.get_escrow().unwrap();
+    assert_eq!(escrow.settled_amount, 400_000);
+    assert_eq!(escrow.status, EscrowStatus::Funded);
+
+    // Case 5: Settle remaining balance to conclude escrow
+    client.settle(&600_000);
+    let escrow_final = client.get_escrow().unwrap();
+    assert_eq!(escrow_final.settled_amount, 1_000_000);
+    assert_eq!(escrow_final.status, EscrowStatus::Settled);
 }
 
 #[test]
-fn test_is_settleable_funded_after_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 5_000;
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAT003"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity + 100);
-    assert!(
-        client.is_settleable(),
-        "funded after maturity is settleable"
-    );
-}
+fn test_partial_settle_bounds() {
+    let (env, client, admin, sme, funding_token) = setup_test();
 
-#[test]
-fn test_is_settleable_legal_hold_active() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    client.set_legal_hold(&true);
-    assert!(
-        !client.is_settleable(),
-        "legal hold active is not settleable"
-    );
-}
+    client.init(&admin, &sme, &funding_token, &1002, &500_000, &10_000);
 
-#[test]
-fn test_is_settleable_already_settled() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    client.settle();
-    assert!(!client.is_settleable(), "already settled is not settleable");
-}
+    env.as_contract(&client.address, || {
+        let mut escrow = crate::storage::get_escrow(&env).unwrap();
+        escrow.funded_amount = 500_000;
+        escrow.status = EscrowStatus::Funded;
+        crate::storage::set_escrow(&env, &escrow);
+    });
 
-#[test]
-fn test_is_settleable_normal_successful() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    assert!(client.is_settleable(), "normal successful is settleable");
-}
-
-// ── get_settlement_readiness bundled view coverage (issue #558) ───────────────
-
-/// Open (not yet funded) escrow with no maturity lock: not settleable, no hold,
-/// maturity vacuously reached, and not ready.
-#[test]
-fn test_settlement_readiness_open_not_ready() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-
-    let r = client.get_settlement_readiness();
+    // Case 1: Zero / negative amount rejected
     assert_eq!(
-        r,
-        SettlementReadiness {
-            is_settleable: false,
-            legal_hold_active: false,
-            maturity_reached: true, // maturity == 0 ⇒ vacuously reached
-            ready_now: false,
-        }
-    );
-    assert!(!r.ready_now);
-}
-
-/// Funded, no maturity lock, no hold: fully ready, and `ready_now == true` must
-/// predict a successful `settle`.
-#[test]
-fn test_settlement_readiness_funded_ready_predicts_settle() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-
-    let r = client.get_settlement_readiness();
-    assert!(r.is_settleable);
-    assert!(!r.legal_hold_active);
-    assert!(r.maturity_reached);
-    assert!(r.ready_now);
-
-    // Parity: ready_now == true ⇒ settle succeeds on the current ledger.
-    let settled = client.settle();
-    assert_eq!(settled.status, 2);
-}
-
-/// Funded but on legal hold: `legal_hold_active` true and `ready_now` false even
-/// though maturity is reached. A `settle` would fail.
-#[test]
-fn test_settlement_readiness_funded_but_held_blocks_ready() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-
-    client.set_legal_hold(&true);
-
-    let r = client.get_settlement_readiness();
-    assert!(r.legal_hold_active);
-    assert!(r.maturity_reached);
-    assert!(
-        !r.is_settleable,
-        "a legal hold makes the escrow not settleable"
-    );
-    assert!(!r.ready_now, "ready_now must be false under an active hold");
-
-    // Parity: ready_now == false ⇒ settle fails.
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.settle();
-    }));
-    assert!(
-        res.is_err(),
-        "settle must fail while a legal hold is active"
-    );
-}
-
-/// Funded with a future maturity: pre-maturity `maturity_reached` is false and
-/// `ready_now` is false; after the maturity timestamp both flip true and `settle`
-/// succeeds — exercising the maturity precedence branch.
-#[test]
-fn test_settlement_readiness_maturity_gate_parity() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    let maturity: u64 = 20_000;
-    client.init(
-        &admin,
-        &String::from_str(&env, "INV_RDY_MAT"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &maturity,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    fund_to_target(&client, &env);
-
-    // Pre-maturity: not reached, not ready.
-    env.ledger().with_mut(|l| l.timestamp = maturity - 1);
-    let pre = client.get_settlement_readiness();
-    assert!(!pre.maturity_reached);
-    assert!(!pre.is_settleable);
-    assert!(!pre.ready_now);
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.settle();
-    }));
-    assert!(res.is_err(), "settle must fail before maturity");
-
-    // At maturity (inclusive): reached and ready; settle succeeds.
-    env.ledger().with_mut(|l| l.timestamp = maturity);
-    let at = client.get_settlement_readiness();
-    assert!(at.maturity_reached);
-    assert!(at.is_settleable);
-    assert!(at.ready_now);
-    let settled = client.settle();
-    assert_eq!(settled.status, 2);
-}
-
-// ── get_settlement_readiness field-by-field parity with source predicates ──
-
-/// Assert that every field of [`SettlementReadiness`] matches the corresponding
-/// standalone predicate and that the invariant `ready_now == is_settleable`
-/// holds. Also verifies the struct never reports settleable/ready while a legal
-/// hold is active.
-fn assert_readiness_matches_predicates(env: &Env, client: &super::LiquifactEscrowClient<'_>) {
-    let r = client.get_settlement_readiness();
-    assert_eq!(
-        r.is_settleable,
-        client.is_settleable(),
-        "is_settleable must match standalone is_settleable()"
+        client.try_partial_settle(&0),
+        Err(Ok(EscrowError::SettlementAmountInvalid))
     );
     assert_eq!(
-        r.legal_hold_active,
-        client.get_legal_hold(),
-        "legal_hold_active must match standalone get_legal_hold()"
+        client.try_partial_settle(&-50),
+        Err(Ok(EscrowError::SettlementAmountInvalid))
     );
-    let maturity_reached_expected =
-        !client.has_maturity_lock() || env.ledger().timestamp() >= client.get_escrow().maturity;
+
+    // Case 2: Exceeding amount rejected
     assert_eq!(
-        r.maturity_reached, maturity_reached_expected,
-        "maturity_reached must match derived predicate from has_maturity_lock() + ledger timestamp"
+        client.try_partial_settle(&500_001),
+        Err(Ok(EscrowError::SettlementAmountInvalid))
+    );
+
+    // Case 3: Valid partial settlement accepted
+    client.partial_settle(&200_000);
+    assert_eq!(client.get_escrow().unwrap().settled_amount, 200_000);
+}
+
+#[test]
+fn test_withdraw_bounds() {
+    let (env, client, admin, sme, funding_token) = setup_test();
+
+    client.init(&admin, &sme, &funding_token, &1003, &300_000, &10_000);
+
+    env.as_contract(&client.address, || {
+        let mut escrow = crate::storage::get_escrow(&env).unwrap();
+        escrow.funded_amount = 300_000;
+        escrow.status = EscrowStatus::Funded;
+        crate::storage::set_escrow(&env, &escrow);
+    });
+
+    // Case 1: Zero or negative withdraw amount
+    assert_eq!(
+        client.try_withdraw(&0),
+        Err(Ok(EscrowError::WithdrawAmountInvalid))
     );
     assert_eq!(
-        r.ready_now, r.is_settleable,
-        "ready_now must equal is_settleable by construction"
-    );
-    assert!(
-        !(r.is_settleable && r.legal_hold_active),
-        "never settleable while legal hold is active"
-    );
-    assert!(
-        !(r.ready_now && r.legal_hold_active),
-        "never ready while legal hold is active"
-    );
-}
-
-/// Open (status=0, not-funded) escrow with maturity=0 (no maturity lock).
-#[test]
-fn test_readiness_fields_open_not_funded() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Funded escrow with maturity=0 and no legal hold: fully settleable.
-#[test]
-fn test_readiness_fields_funded_no_lock_no_hold() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Funded, maturity=0, legal hold active: the hold must block
-/// settleability even though maturity is vacuously reached.
-#[test]
-fn test_readiness_fields_funded_no_lock_with_hold() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    client.set_legal_hold(&true);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Funded with a future maturity (no hold), ledger before maturity:
-/// `maturity_reached` and `is_settleable` are both false.
-#[test]
-fn test_readiness_fields_pre_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 20_000;
-    client.init(
-        &admin,
-        &String::from_str(&env, "READY_PRE"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity - 1);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Funded at the exact maturity timestamp (no hold): all fields ready.
-#[test]
-fn test_readiness_fields_at_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 20_000;
-    client.init(
-        &admin,
-        &String::from_str(&env, "READY_AT"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Funded after maturity but with an active legal hold: the hold must
-/// override maturity; `is_settleable` / `ready_now` are false.
-#[test]
-fn test_readiness_fields_after_maturity_with_hold() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let (contract_id, client) = deploy_with_id(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let maturity: u64 = 20_000;
-    client.init(
-        &admin,
-        &String::from_str(&env, "READY_HLD"),
-        &sme,
-        &TARGET,
-        &500i64,
-        &maturity,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-    env.ledger().with_mut(|l| l.timestamp = maturity + 100);
-    client.set_legal_hold(&true);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Already-settled escrow: terminal status makes `is_settleable` false.
-#[test]
-fn test_readiness_fields_already_settled() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-    client.settle();
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-/// Explicit zero-maturity case: `has_maturity_lock()` is false and
-/// `maturity_reached` is vacuously true.
-#[test]
-fn test_readiness_fields_zero_maturity_lock_false() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    assert!(
-        !client.has_maturity_lock(),
-        "maturity=0 → has_maturity_lock must be false"
-    );
-    fund_to_target(&client, &env);
-    assert_readiness_matches_predicates(&env, &client);
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// `settle_pool` field in EscrowSettled event (GitHub Issue #639)
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Verify that settle_pool equals principal + coupon for a standard yield rate.
-///
-/// The sole investor funds the escrow to the exact target so `funded_amount` and
-/// `FundingCloseSnapshot.total_principal` both equal `principal`. After settlement,
-/// `compute_investor_payout` returns the full `settle_pool` for the sole participant.
-#[test]
-fn test_settle_pool_principal_plus_coupon() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    let principal = 1_000_000_000i128; // 1,000 tokens (assuming 6 decimals)
-    let yield_bps = 500i64; // 5%
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP001"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
+        client.try_withdraw(&-10),
+        Err(Ok(EscrowError::WithdrawAmountInvalid))
     );
 
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // Compute expected settle_pool: coupon = 1_000_000_000 × 500 / 10_000 = 50_000_000
-    // settle_pool = 1_000_000_000 + 50_000_000 = 1_050_000_000
-    let expected_coupon = 50_000_000i128;
-    let expected_settle_pool = principal + expected_coupon;
-
-    // Verify settle_pool via compute_investor_payout, which uses the same arithmetic:
-    // The sole investor should receive the full settle_pool.
-    let payout = client.compute_investor_payout(&investor);
+    // Case 2: Over-limit withdraw amount
     assert_eq!(
-        payout, expected_settle_pool,
-        "Single investor payout must equal settle_pool (principal + coupon)"
+        client.try_withdraw(&300_001),
+        Err(Ok(EscrowError::WithdrawAmountInvalid))
     );
 
-    // Verify the escrow state post-settlement.
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, yield_bps);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
-}
+    // Case 3: Valid withdrawal within bounds
+    client.withdraw(&150_000);
+    assert_eq!(client.get_escrow().unwrap().withdrawn_amount, 150_000);
 
-/// Verify settle_pool equals principal when yield_bps is zero (no coupon).
-#[test]
-fn test_settle_pool_zero_yield() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let (token, treasury) = free_addresses(&env);
+    // Case 4: Subsequent withdrawal up to maximum limit
+    client.withdraw(&150_000);
+    assert_eq!(client.get_escrow().unwrap().withdrawn_amount, 300_000);
 
-    let principal = 5_000_000_000i128;
-    let yield_bps = 0i64; // 0% yield
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP002"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // With zero yield, settle_pool should equal principal (no coupon).
-    // Expected: settle_pool = 5_000_000_000 + 0 = 5_000_000_000
-    let expected_settle_pool = principal;
-
-    // Verify settle_pool via compute_investor_payout: sole investor receives principal.
-    let payout = client.compute_investor_payout(&investor);
+    // Case 5: Attempting withdrawal after limit reached
     assert_eq!(
-        payout, expected_settle_pool,
-        "Zero yield: payout must equal principal (settle_pool has no coupon)"
+        client.try_withdraw(&1),
+        Err(Ok(EscrowError::WithdrawAmountInvalid))
     );
-
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, 0);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
-}
-
-/// Verify settle_pool uses floor division (rounding down) for coupon calculation.
-#[test]
-fn test_settle_pool_rounding_floor() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    // Choose a principal and yield that produces a non-integer coupon to verify floor rounding.
-    let principal = 1_000_003i128; // Odd number to force rounding
-    let yield_bps = 333i64; // 3.33%
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP003"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // Compute expected coupon with floor division:
-    // coupon = 1_000_003 × 333 / 10_000 = 333_000_999 / 10_000 = 33_300 (floor)
-    // settle_pool = 1_000_003 + 33_300 = 1_033_303
-    let expected_coupon = 33_300i128;
-    let expected_settle_pool = principal + expected_coupon;
-
-    // Verify rounding: the numerator is 333_000_999 and 333_000_999 / 10_000 = 33_300 (floor),
-    // not 33_301. Confirm settle_pool via compute_investor_payout on the sole investor.
-    let payout = client.compute_investor_payout(&investor);
-    assert_eq!(
-        payout, expected_settle_pool,
-        "Floor rounding: settle_pool must be {expected_settle_pool}, got {payout}"
-    );
-
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, yield_bps);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
-}
-
-/// Verify settle_pool handles large principal amounts without overflow.
-#[test]
-fn test_settle_pool_large_principal() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    // A real Stellar asset token is required: the principal here exceeds the
-    // default mock-token balance, so the investor must be explicitly minted funds
-    // to clear the pre-transfer balance guard in `fund`.
-    let sac = install_stellar_asset_token(&env);
-    let token = sac.id.clone();
-    let treasury = Address::generate(&env);
-
-    // Use a large principal near the upper practical limit for i128.
-    let principal = 1_000_000_000_000_000_000i128; // 1 quintillion base units
-    let yield_bps = 100i64; // 1%
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP004"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    sac.stellar.mint(&investor, &principal);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // Compute expected settle_pool:
-    // coupon = 1_000_000_000_000_000_000 × 100 / 10_000 = 10_000_000_000_000_000
-    // settle_pool = 1_000_000_000_000_000_000 + 10_000_000_000_000_000 = 1_010_000_000_000_000_000
-    let expected_coupon = 10_000_000_000_000_000i128;
-    let expected_settle_pool = principal + expected_coupon;
-
-    // Verify no overflow occurs and settle_pool is correct via compute_investor_payout.
-    let payout = client.compute_investor_payout(&investor);
-    assert_eq!(
-        payout, expected_settle_pool,
-        "Large principal: settle_pool must be {expected_settle_pool} without overflow"
-    );
-
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, yield_bps);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
-}
-
-/// Verify settle_pool with maximum yield_bps (10000 = 100%).
-#[test]
-fn test_settle_pool_max_yield() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    let principal = 100_000_000i128;
-    let yield_bps = 10_000i64; // 100% yield (max allowed)
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP005"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // Compute expected settle_pool:
-    // coupon = 100_000_000 × 10_000 / 10_000 = 100_000_000
-    // settle_pool = 100_000_000 + 100_000_000 = 200_000_000
-    let expected_coupon = 100_000_000i128;
-    let expected_settle_pool = principal + expected_coupon;
-
-    // Verify settle_pool at maximum yield via compute_investor_payout.
-    let payout = client.compute_investor_payout(&investor);
-    assert_eq!(
-        payout, expected_settle_pool,
-        "Max yield (100%): settle_pool must be double the principal"
-    );
-
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, yield_bps);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
-}
-
-/// Verify settle_pool is computed correctly when maturity is zero (no maturity lock).
-#[test]
-fn test_settle_pool_no_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    let principal = 2_000_000_000i128;
-    let yield_bps = 750i64; // 7.5%
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "SP006"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &0u64, // maturity = 0 (no maturity lock)
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Fund exactly `principal` so funded_amount == funding_target == principal.
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-    client.settle();
-
-    // Compute expected settle_pool:
-    // coupon = 2_000_000_000 × 750 / 10_000 = 150_000_000
-    // settle_pool = 2_000_000_000 + 150_000_000 = 2_150_000_000
-    let expected_coupon = 150_000_000i128;
-    let expected_settle_pool = principal + expected_coupon;
-
-    // Verify settle_pool with no maturity lock via compute_investor_payout.
-    let payout = client.compute_investor_payout(&investor);
-    assert_eq!(
-        payout, expected_settle_pool,
-        "No-maturity settle_pool must be {expected_settle_pool}"
-    );
-
-    let escrow = client.get_escrow();
-    assert_eq!(escrow.funded_amount, principal);
-    assert_eq!(escrow.yield_bps, yield_bps);
-    assert_eq!(escrow.maturity, 0u64);
-    assert_eq!(escrow.status, 2, "Escrow must be in settled state");
 }

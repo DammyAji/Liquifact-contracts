@@ -42,7 +42,7 @@ re-implementing storage reads to guarantee identical semantics.
 - [get_funding_close_snapshot](#get_funding_close_snapshot--optionfundingclosesnapshot)
 
 **Tier Lookup:**
-- [preview_yield_tier](#preview_yield_tieramount-i128-lock-u64--i64-u64)
+- [preview_yield_tier](#preview_yield_tieramount-i128-lock-u64--yieldresolution)
 
 **Per-Investor State:**
 - [get_contribution](#get_contributioninvestor-address--i128)
@@ -520,13 +520,13 @@ without re-implementing the `unwrap_or` fallback themselves.
 
 ## Tier Lookup
 
-### `preview_yield_tier(amount: i128, lock: u64) → (i64, u64)`
+### `preview_yield_tier(amount: i128, lock: u64) → YieldResolution`
 
-**Signature:** `pub fn preview_yield_tier(env: Env, amount: i128, lock: u64) -> (i64, u64)`
+**Signature:** `pub fn preview_yield_tier(env: Env, amount: i128, lock: u64) -> YieldResolution`
 
 Pure read — no auth, no storage writes, safe for simulation.
 
-Returns `(effective_yield_bps, matched_lock_secs)` for a hypothetical first deposit of `amount`
+Returns a [`YieldResolution`](#yieldresolution) for a hypothetical first deposit of `amount`
 with `lock` seconds of commitment, using the **exact same tier-selection rule** applied by
 `fund_with_commitment`. This lets a prospective investor see which tier they would receive before
 depositing, without re-implementing the selection logic.
@@ -534,7 +534,7 @@ depositing, without re-implementing the selection logic.
 The `amount` parameter mirrors the `fund_with_commitment` signature. In the current release, tier
 selection is lock-only; `amount` is accepted for API parity and forward-compatibility.
 
-**Return values:**
+**Return fields (`YieldResolution`):**
 
 | Condition | `effective_yield_bps` | `matched_lock_secs` |
 |---|---|---|
@@ -548,6 +548,18 @@ selection is lock-only; `amount` is accepted for API parity and forward-compatib
 
 **Security note:** the preview is guaranteed to agree with `fund_with_commitment` because it delegates
 to the same internal `effective_yield_for_commitment` helper — there is no separate selection path.
+
+---
+
+### `YieldResolution`
+
+Named return type for [`preview_yield_tier`](#preview_yield_tieramount-i128-lock-u64--yieldresolution)
+and the internal `effective_yield_for_commitment` helper.
+
+| Field | Type | Description |
+|---|---|---|
+| `effective_yield_bps` | `i64` | Resolved yield in basis points. Equals the escrow base yield when no tier matched, or the highest qualifying tier's `yield_bps` otherwise. |
+| `matched_lock_secs` | `u64` | `min_lock_secs` of the matched tier, or `0` when base yield applies (no tier table, empty table, zero-lock, or no qualifying tier). |
 
 ---
 
@@ -792,6 +804,15 @@ Returns the yield-tier ladder configured at `init`, or an empty `Vec` when no ti
 - **Order** — returned order matches the validated non-decreasing ordering enforced at `init`: `min_lock_secs` strictly increasing, `yield_bps` non-decreasing.
 - **Empty vec** — returned for both "no tiers passed at init" and "legacy instance predating tier support"; callers must not treat an empty result as an error.
 - **Pure read** — no auth required, no state mutation.
+
+## `get_yield_tiers_page(start, limit) → Vec<YieldTier>`
+
+Returns a read-only paginated view of the configured yield-tier ladder using the same `start`/`limit` contract as the existing investor and allowlist read views.
+
+- **Start beyond the end** — returns an empty page.
+- **Limit zero** — returns an empty page.
+- **Limit above the pagination ceiling** — clamps to the shared pagination ceiling (`MAX_INVESTOR_READ_BATCH`).
+- **Ordering** — preserves the immutable tier-table order established at `init`.
 
 ### `YieldTier` fields
 
