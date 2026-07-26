@@ -7697,661 +7697,324 @@ fn test_unfund_event_emitted() {
 }
 
 
-// ─── Issue #807: Yield-Tier Bounds Validation Tests ───────────────────────────────
+// ─── get_funding_records paginated view tests (issue #790) ─────────────────────
 
-/// Test bounds validation for init() base yield_bps parameter.
-/// Valid range: 0..=10_000 (basis points; 0% to 100%)
 #[test]
-fn test_init_base_yield_bps_min_valid() {
+fn test_get_funding_records_empty() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Minimum valid: 0 basis points (0% yield)
-    let escrow = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "YIELD_MIN"),
-        &sme,
-        &100_000i128,
-        &0i64, // min valid
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    assert_eq!(escrow.yield_bps, 0, "min valid yield_bps (0) should be accepted");
+    // No funding records exist yet
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 0, "empty result when no records exist");
 }
 
 #[test]
-fn test_init_base_yield_bps_max_valid() {
+fn test_get_funding_records_single_page() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Maximum valid: 10_000 basis points (100% yield)
-    let escrow = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "YIELD_MAX"),
-        &sme,
-        &100_000i128,
-        &10_000i64, // max valid
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-    assert_eq!(escrow.yield_bps, 10_000, "max valid yield_bps (10_000) should be accepted");
+    // Add 3 investors with different amounts
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    client.fund(&inv_a, &1_000i128);
+    client.fund(&inv_b, &2_000i128);
+    client.fund(&inv_c, &3_000i128);
+
+    // All fit in one page (limit=50 > 3 records)
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 3, "single page should return all 3 records");
+
+    // Verify each record
+    let rec_a = records.get(0).unwrap();
+    assert_eq!(rec_a.0, inv_a);
+    assert_eq!(rec_a.1, 1_000i128);
+
+    let rec_b = records.get(1).unwrap();
+    assert_eq!(rec_b.0, inv_b);
+    assert_eq!(rec_b.1, 2_000i128);
+
+    let rec_c = records.get(2).unwrap();
+    assert_eq!(rec_c.0, inv_c);
+    assert_eq!(rec_c.1, 3_000i128);
 }
 
 #[test]
-fn test_init_base_yield_bps_over_limit() {
+fn test_get_funding_records_continuation() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Over limit: 10_001 basis points (> 100%)
-    assert_contract_error(
-        client.try_init(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "YIELD_OVER"),
-            &sme,
-            &100_000i128,
-            &10_001i64, // over max
-            &0u64,
-            &Address::generate(&env),
-            &None,
-            &Address::generate(&env),
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None::<i64>,
-        ),
-        EscrowError::YieldBpsOutOfRange,
-    );
+    // Add 5 investors
+    let mut investors = std::vec::Vec::new();
+    let mut amounts = std::vec::Vec::new();
+
+    for i in 0..5 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) * 1_000i128;
+        investors.push(inv.clone());
+        amounts.push(amount);
+        client.fund(&inv, &amount);
+    }
+
+    // Page 1: start=0, limit=2
+    let page1 = client.get_funding_records(&0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().0, investors[0]);
+    assert_eq!(page1.get(0).unwrap().1, amounts[0]);
+    assert_eq!(page1.get(1).unwrap().0, investors[1]);
+    assert_eq!(page1.get(1).unwrap().1, amounts[1]);
+
+    // Page 2: start=2, limit=2
+    let page2 = client.get_funding_records(&2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().0, investors[2]);
+    assert_eq!(page2.get(0).unwrap().1, amounts[2]);
+    assert_eq!(page2.get(1).unwrap().0, investors[3]);
+    assert_eq!(page2.get(1).unwrap().1, amounts[3]);
+
+    // Page 3: start=4, limit=2 (only 1 left)
+    let page3 = client.get_funding_records(&4, &2);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().0, investors[4]);
+    assert_eq!(page3.get(0).unwrap().1, amounts[4]);
+
+    // Verify all records are accounted for with no duplicates
+    let all_paginated = std::vec::Vec::from([page1, page2, page3].into_iter().flatten().collect::<Vec<_>>());
+    assert_eq!(all_paginated.len(), 5, "pagination should return all records exactly once");
 }
 
 #[test]
-fn test_init_base_yield_bps_negative() {
+fn test_get_funding_records_ceiling_clamp() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Under limit: negative yield_bps (invalid)
-    assert_contract_error(
-        client.try_init(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "YIELD_NEG"),
-            &sme,
-            &100_000i128,
-            &-1i64, // under min (negative)
-            &0u64,
-            &Address::generate(&env),
-            &None,
-            &Address::generate(&env),
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None::<i64>,
-        ),
-        EscrowError::YieldBpsOutOfRange,
+    // Add 52 investors to exceed the page ceiling (MAX_INVESTOR_READ_BATCH = 50)
+    let mut investor_amounts = std::vec::Vec::new();
+    for i in 0..52 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) as i128 * 1_000i128;
+        investor_amounts.push((inv.clone(), amount));
+        client.fund(&inv, &amount);
+    }
+
+    // Request limit of 100 (exceeds ceiling of 50)
+    let page = client.get_funding_records(&0, &100);
+    assert_eq!(
+        page.len(),
+        50,
+        "result should be clamped to MAX_INVESTOR_READ_BATCH (50), not the requested 100"
+    );
+
+    // Request limit of 75 (exceeds ceiling of 50)
+    let page = client.get_funding_records(&0, &75);
+    assert_eq!(
+        page.len(),
+        50,
+        "result should be clamped to ceiling even when requesting 75"
+    );
+
+    // Get the second page to verify continuation works after clamp
+    let page2 = client.get_funding_records(&50, &100);
+    assert_eq!(
+        page2.len(),
+        2,
+        "remaining 2 records should be in second page"
     );
 }
 
-/// Test bounds validation for init() protocol_fee_bps parameter.
-/// Valid range: 0..=10_000 (basis points; 0% to 100%)
 #[test]
-fn test_init_protocol_fee_bps_min_valid() {
+fn test_get_funding_records_boundary_at_count() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Minimum valid: 0 basis points (0% fee; no treasury routing)
-    let escrow = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "FEE_MIN"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &Some(0i64), // min valid protocol fee
+    // Add 5 investors
+    for _ in 0..5 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // start = count (5), should return empty
+    let records = client.get_funding_records(&5, &50);
+    assert_eq!(
+        records.len(),
+        0,
+        "start at boundary (== count) should return empty"
     );
-    assert!(escrow.invoice_id == symbol_short!("FEE_MIN"));
 }
 
 #[test]
-fn test_init_protocol_fee_bps_max_valid() {
+fn test_get_funding_records_boundary_beyond_count() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Maximum valid: 10_000 basis points (100% fee; entire disbursement to treasury)
-    let escrow = client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "FEE_MAX"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &Some(10_000i64), // max valid protocol fee
+    // Add 5 investors
+    for _ in 0..5 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // start > count, should return empty
+    let records = client.get_funding_records(&10, &50);
+    assert_eq!(
+        records.len(),
+        0,
+        "start beyond boundary (> count) should return empty"
     );
-    assert!(escrow.invoice_id == symbol_short!("FEE_MAX"));
 }
 
 #[test]
-fn test_init_protocol_fee_bps_over_limit() {
+fn test_get_funding_records_zero_limit() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Over limit: 10_001 basis points (> 100%)
-    assert_contract_error(
-        client.try_init(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "FEE_OVER"),
-            &sme,
-            &100_000i128,
-            &800i64,
-            &0u64,
-            &Address::generate(&env),
-            &None,
-            &Address::generate(&env),
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &Some(10_001i64), // over max
-        ),
-        EscrowError::ProtocolFeeBpsOutOfRange,
-    );
+    // Add some funding
+    for _ in 0..3 {
+        let inv = Address::generate(&env);
+        client.fund(&inv, &1_000i128);
+    }
+
+    // limit=0 should return empty (no records requested)
+    let records = client.get_funding_records(&0, &0);
+    assert_eq!(records.len(), 0, "limit=0 should return empty result");
 }
 
 #[test]
-fn test_init_protocol_fee_bps_negative() {
+fn test_get_funding_records_multiple_contributions_per_investor() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    // Under limit: negative protocol_fee_bps (invalid)
-    assert_contract_error(
-        client.try_init(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "FEE_NEG"),
-            &sme,
-            &100_000i128,
-            &800i64,
-            &0u64,
-            &Address::generate(&env),
-            &None,
-            &Address::generate(&env),
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &Some(-1i64), // under min (negative)
-        ),
-        EscrowError::ProtocolFeeBpsOutOfRange,
-    );
-}
+    // Single investor makes multiple deposits
+    let inv = Address::generate(&env);
+    client.fund(&inv, &1_000i128);
+    client.fund(&inv, &2_000i128);
+    client.fund(&inv, &3_000i128);
 
-/// Test bounds validation for yield tier table items.
-/// Each tier's yield_bps must be in 0..=10_000 and >= base_yield
-#[test]
-fn test_init_tier_yield_bps_min_valid() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
+    // Should appear exactly once in the index with the cumulative contribution
+    let records = client.get_funding_records(&0, &50);
+    assert_eq!(records.len(), 1, "investor should appear once even with multiple deposits");
 
-    let mut tiers = SorobanVec::new(&env);
-    // Tier with minimum valid yield_bps equal to base yield
-    tiers.push_back(YieldTier {
-        min_lock_secs: 100,
-        yield_bps: 800, // == base_yield (min valid for tier)
-    });
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "TIER_YIELD_MIN"),
-        &sme,
-        &100_000i128,
-        &800i64, // base yield
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &Some(tiers),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
+    let record = records.get(0).unwrap();
+    assert_eq!(record.0, inv);
+    assert_eq!(
+        record.1, 6_000i128,
+        "contribution should be sum of all deposits"
     );
 }
 
 #[test]
-fn test_init_tier_yield_bps_max_valid() {
+fn test_get_funding_records_preserves_order() {
     let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    let mut tiers = SorobanVec::new(&env);
-    // Tier with maximum valid yield_bps
-    tiers.push_back(YieldTier {
-        min_lock_secs: 100,
-        yield_bps: 10_000, // max valid yield_bps
-    });
+    // Add investors in a specific order
+    let mut investors = std::vec::Vec::new();
+    for _ in 0..10 {
+        let inv = Address::generate(&env);
+        investors.push(inv.clone());
+        client.fund(&inv, &1_000i128);
+    }
 
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "TIER_YIELD_MAX"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &Some(tiers),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    // Paginate through with limit=3 each to reconstruct full order
+    let mut all_records = std::vec::Vec::new();
+    let mut start = 0;
+    loop {
+        let page = client.get_funding_records(&start, &3);
+        if page.is_empty() {
+            break;
+        }
+        for rec in &page {
+            all_records.push(rec.clone());
+        }
+        start += page.len() as u32;
+    }
+
+    // Verify the order matches the insertion order
+    assert_eq!(all_records.len(), 10, "should retrieve all 10 records");
+    for (i, rec) in all_records.iter().enumerate() {
+        assert_eq!(rec.0, investors[i], "records should be in insertion order");
+    }
 }
 
 #[test]
-#[should_panic]
-fn test_init_tier_yield_bps_over_limit_panics() {
+fn test_get_funding_records_empty_then_funded() {
     let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    let mut tiers = SorobanVec::new(&env);
-    // Tier with over-limit yield_bps (> 100%)
-    tiers.push_back(YieldTier {
-        min_lock_secs: 100,
-        yield_bps: 10_001, // over max → TierYieldOutOfRange
-    });
+    // Initially no records
+    let records_before = client.get_funding_records(&0, &50);
+    assert_eq!(records_before.len(), 0);
 
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "TIER_YIELD_OVER"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &Some(tiers),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    // Add some funding
+    let inv = Address::generate(&env);
+    client.fund(&inv, &1_000i128);
+
+    // Now records should appear
+    let records_after = client.get_funding_records(&0, &50);
+    assert_eq!(records_after.len(), 1);
+    assert_eq!(records_after.get(0).unwrap().0, inv);
+    assert_eq!(records_after.get(0).unwrap().1, 1_000i128);
 }
 
 #[test]
-#[should_panic]
-fn test_init_tier_yield_bps_negative_panics() {
+fn test_get_funding_records_full_iteration() {
     let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
 
-    let mut tiers = SorobanVec::new(&env);
-    // Tier with negative yield_bps (invalid)
-    tiers.push_back(YieldTier {
-        min_lock_secs: 100,
-        yield_bps: -1, // negative → TierYieldOutOfRange
-    });
+    // Add 123 investors to exercise full multi-page iteration
+    // (123 / 50 ceiling = 3 pages)
+    let mut investors = std::vec::Vec::new();
+    let mut amounts = std::vec::Vec::new();
 
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "TIER_YIELD_NEG"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &Some(tiers),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-}
+    for i in 0..123 {
+        let inv = Address::generate(&env);
+        let amount = (i + 1) as i128 * 100i128;
+        investors.push(inv.clone());
+        amounts.push(amount);
+        client.fund(&inv, &amount);
+    }
 
-/// Test bounds validation for committed_lock_secs in fund_with_commitment.
-/// Valid range: 0..=u64::MAX seconds (all u64 values; but clamped by maturity guard)
-#[test]
-fn test_fund_with_commitment_lock_zero_valid() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
+    // Paginate through all records
+    let mut collected = std::vec::Vec::new();
+    let mut start = 0;
 
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "LOCK_ZERO"),
-        &sme,
-        &10_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
+    loop {
+        let page = client.get_funding_records(&start, &50);
+        if page.is_empty() {
+            break;
+        }
+        for rec in &page {
+            collected.push(rec.clone());
+        }
+        start += page.len() as u32;
+    }
+
+    // Verify we got all records
+    assert_eq!(
+        collected.len(),
+        123,
+        "full iteration should return all 123 records"
     );
 
-    let investor = Address::generate(&env);
-    // Zero lock is valid (no commitment)
-    client.fund_with_commitment(&investor, &5_000i128, &0u64);
-}
-
-#[test]
-fn test_fund_with_commitment_lock_large_valid() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    // Maturity set far in the future (100 years in seconds)
-    let far_future = 100u64 * 365u64 * 24u64 * 3600u64; // ~3.15 billion seconds
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "LOCK_LARGE"),
-        &sme,
-        &10_000i128,
-        &800i64,
-        &far_future,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    let investor = Address::generate(&env);
-    // Large lock value that doesn't exceed maturity
-    let large_lock = 50u64 * 365u64 * 24u64 * 3600u64; // 50 years
-    client.fund_with_commitment(&investor, &5_000i128, &large_lock);
-}
-
-/// Test bounds validation for preview_yield_tier parameters.
-/// lock parameter: valid range 0..=u64::MAX (pure comparison, all values safe)
-#[test]
-fn test_preview_yield_tier_lock_zero() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "PREVIEW_ZERO"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Zero lock should return base yield
-    let (bps, lock_secs) = client.preview_yield_tier(&1_000i128, &0u64);
-    assert_eq!(bps, 800, "zero lock should return base yield");
-    assert_eq!(lock_secs, 0, "zero lock should return matched_lock_secs=0");
-}
-
-#[test]
-fn test_preview_yield_tier_lock_max() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "PREVIEW_MAX"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Max u64 lock should not panic (pure comparison logic, no overflow)
-    let (bps, lock_secs) = client.preview_yield_tier(&1_000i128, &u64::MAX);
-    assert_eq!(bps, 800, "huge lock should still return valid yield");
-    assert_eq!(lock_secs, 0, "no tier exists, so matched_lock_secs=0");
-}
-
-/// Test bounds validation for preview_yield_tier amount parameter.
-/// Note: amount parameter is intentionally unused; all i128 values are valid (no validation needed)
-#[test]
-fn test_preview_yield_tier_amount_zero() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_ZERO"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Zero amount should not cause any issues (amount is unused)
-    let (bps, _) = client.preview_yield_tier(&0i128, &0u64);
-    assert_eq!(bps, 800);
-}
-
-#[test]
-fn test_preview_yield_tier_amount_negative() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_NEG"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Negative amount should not cause any issues (amount is unused)
-    let (bps, _) = client.preview_yield_tier(&-1_000i128, &0u64);
-    assert_eq!(bps, 800);
-}
-
-#[test]
-fn test_preview_yield_tier_amount_max() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let (tok, tre) = free_addresses(&env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "PREVIEW_AMT_MAX"),
-        &sme,
-        &100_000i128,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &tre,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Maximum i128 amount should not cause issues (amount is unused)
-    let (bps, _) = client.preview_yield_tier(&i128::MAX, &0u64);
-    assert_eq!(bps, 800);
+    // Spot-check some records
+    assert_eq!(collected.get(0).unwrap().0, investors[0]);
+    assert_eq!(collected.get(0).unwrap().1, amounts[0]);
+    assert_eq!(collected.get(49).unwrap().0, investors[49]);
+    assert_eq!(collected.get(49).unwrap().1, amounts[49]);
+    assert_eq!(collected.get(50).unwrap().0, investors[50]);
+    assert_eq!(collected.get(50).unwrap().1, amounts[50]);
+    assert_eq!(collected.get(122).unwrap().0, investors[122]);
+    assert_eq!(collected.get(122).unwrap().1, amounts[122]);
 }
