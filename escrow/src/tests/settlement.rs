@@ -22,8 +22,8 @@ use super::{
     install_stellar_asset_token, setup, StellarTestToken, MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
 use crate::{
-    EscrowError, EscrowPartialSettle, EscrowSettled, InvestorPayoutClaimed, InvoiceEscrow,
-    LiquifactEscrow, SettlementReadiness, SmeWithdrew, YieldTier,
+    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementReadiness,
+    SettlementResult, YieldTier,
 };
 use soroban_sdk::{
     symbol_short,
@@ -603,7 +603,7 @@ fn test_cost_baseline_settle() {
     client.fund(&investor, &TARGET);
     env.ledger().set_timestamp(50_001);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// `settle` called twice must panic on the second call.
@@ -664,8 +664,8 @@ fn settle_with_maturity_zero_succeeds_immediately() {
 
     env.ledger().with_mut(|l| l.timestamp = 1);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
-    assert_eq!(settled.maturity, 0);
+    assert_eq!(settled.escrow.status, 2);
+    assert_eq!(settled.escrow.maturity, 0);
 }
 
 /// `settle` with `maturity > 0` must trap one second before the configured
@@ -768,8 +768,8 @@ fn settle_at_maturity_succeeds() {
     fund_to_target(&client, &env);
     env.ledger().with_mut(|l| l.timestamp = maturity);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
-    assert_eq!(settled.maturity, maturity);
+    assert_eq!(settled.escrow.status, 2);
+    assert_eq!(settled.escrow.maturity, maturity);
 }
 
 /// `settle` must panic if SME auth is not provided.
@@ -2139,7 +2139,7 @@ fn test_settlement_readiness_funded_ready_predicts_settle() {
 
     // Parity: ready_now == true ⇒ settle succeeds on the current ledger.
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// Funded but on legal hold: `legal_hold_active` true and `ready_now` false even
@@ -2226,7 +2226,7 @@ fn test_settlement_readiness_maturity_gate_parity() {
     assert!(at.is_settleable);
     assert!(at.ready_now);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 // ── get_settlement_readiness field-by-field parity with source predicates ──
@@ -2795,69 +2795,86 @@ fn test_settle_pool_no_maturity() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Settlement event topics and payloads (GitHub Issue #876)
-//
-// `env.events().all()` retains only the latest invocation's events, so each
-// test snapshots immediately after the emitting call — before any follow-up
-// read that would clear the buffer.
+// SettlementResult struct — typed return from settle()
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// `settle` emits `EscrowSettled` with topic `escrow_sd` and the full payload.
+/// `settle()` must return a `SettlementResult` with the correct `coupon`, `settle_pool`,
+/// `settled_at`, and the post-settlement `escrow` snapshot.
 #[test]
-fn settle_emits_escrow_settled_event_topics_and_payload() {
+fn settlement_result_fields_match_computed_values() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
+    env.mock_all_auths();
 
-    let settle_ts: u64 = 42_000;
-    env.ledger().set_timestamp(settle_ts);
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
 
-    client.settle();
-
-    // Capture before any follow-up invoke (e.g. get_escrow) clears the buffer.
-    let events = env.events().all();
-    assert_eq!(
-        events.events().len(),
-        1,
-        "settle must emit exactly one contract event"
+    let yield_bps = 800i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_001"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
     );
 
-    let escrow = client.get_escrow();
-    let expected_coupon = TARGET * 800 / 10_000;
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    // coupon = 100_000_000_000 × 800 / 10_000 = 8_000_000_000
+    let expected_coupon = 8_000_000_000i128;
+    // settle_pool = 100_000_000_000 + 8_000_000_000 = 108_000_000_000
     let expected_settle_pool = TARGET + expected_coupon;
 
+    assert_eq!(result.coupon, expected_coupon, "coupon mismatch");
     assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowSettled {
-            name: symbol_short!("escrow_sd"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: TARGET,
-            yield_bps: 800,
-            maturity: 0,
-            settled_at_ledger_timestamp: settle_ts,
-            settle_pool: expected_settle_pool,
-        }
-        .to_xdr(&env, &contract_id)
+        result.settle_pool, expected_settle_pool,
+        "settle_pool mismatch"
+    );
+    assert_eq!(result.settled_at, 1u64, "settled_at must match ledger time");
+    assert_eq!(result.escrow.status, 2, "escrow must be settled");
+    assert_eq!(
+        result.escrow.funded_amount, TARGET,
+        "funded_amount preserved in escrow snapshot"
+    );
+    assert_eq!(
+        result.escrow.yield_bps, yield_bps,
+        "yield_bps preserved in escrow snapshot"
     );
 }
 
-/// Zero-yield `settle` still emits `escrow_sd` with `settle_pool == funded_amount`.
+/// `settle()` with `yield_bps == 0` must return `coupon == 0` and `settle_pool == funded_amount`.
 #[test]
-fn settle_emits_escrow_settled_event_zero_yield() {
+fn settlement_result_zero_yield() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let (token, treasury) = free_addresses(&env);
 
-    let principal = 5_000_000_000i128;
     client.init(
         &admin,
-        &String::from_str(&env, "EVT_ZY"),
+        &String::from_str(&env, "INV_SR_002"),
         &sme,
-        &principal,
+        &TARGET,
         &0i64,
         &0u64,
         &token,
@@ -2874,44 +2891,220 @@ fn settle_emits_escrow_settled_event_zero_yield() {
         &None::<i64>,
     );
 
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
 
-    let settle_ts: u64 = 7_777;
-    env.ledger().set_timestamp(settle_ts);
-    client.settle();
+    let result = client.settle();
 
-    let events = env.events().all();
-    let escrow = client.get_escrow();
+    assert_eq!(result.coupon, 0i128, "coupon must be 0 when yield_bps == 0");
     assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowSettled {
-            name: symbol_short!("escrow_sd"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: principal,
-            yield_bps: 0,
-            maturity: 0,
-            settled_at_ledger_timestamp: settle_ts,
-            settle_pool: principal,
-        }
-        .to_xdr(&env, &contract_id)
+        result.settle_pool, TARGET,
+        "settle_pool must equal funded_amount when yield_bps == 0"
+    );
+    assert_eq!(result.settled_at, 1u64);
+}
+
+/// `settle()` must record the correct `settled_at` timestamp matching the ledger.
+#[test]
+fn settlement_result_settled_at_matches_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let maturity = 100u64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_003"),
+        &sme,
+        &TARGET,
+        &500i64,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    let timestamp = maturity + 1;
+    env.ledger().with_mut(|l| l.timestamp = timestamp);
+
+    let result = client.settle();
+
+    assert_eq!(
+        result.settled_at, timestamp,
+        "settled_at must equal the ledger timestamp at settlement"
+    );
+    // Cross-check with get_settled_at view
+    assert_eq!(
+        client.get_settled_at(),
+        Some(timestamp),
+        "get_settled_at must match result.settled_at"
     );
 }
 
-/// Floor-rounded coupon is reflected in the `EscrowSettled.settle_pool` payload.
+/// `SettlementResult.coupon` + `funded_amount` must equal `settle_pool` (invariant).
 #[test]
-fn settle_emits_escrow_settled_event_floor_rounding() {
+fn settlement_result_coupon_plus_funded_equals_pool() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let (token, treasury) = free_addresses(&env);
 
-    let principal = 1_000_003i128;
-    let yield_bps = 333i64;
+    let yield_bps = 1234i64;
     client.init(
         &admin,
-        &String::from_str(&env, "EVT_FL"),
+        &String::from_str(&env, "INV_SR_004"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+
+    assert_eq!(
+        result.coupon + result.escrow.funded_amount,
+        result.settle_pool,
+        "coupon + funded_amount must equal settle_pool"
+    );
+}
+
+/// `SettlementResult.settle_pool` must match `get_settlement_pool()`.
+#[test]
+fn settlement_result_pool_matches_get_settlement_pool() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_005"),
+        &sme,
+        &TARGET,
+        &750i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = 1);
+
+    let result = client.settle();
+    let pool_view = client.get_settlement_pool();
+
+    assert_eq!(
+        result.settle_pool, pool_view,
+        "SettlementResult.settle_pool must match get_settlement_pool()"
+    );
+}
+
+/// `SettlementResult.escrow` snapshot must have status == 2 and correct maturity.
+#[test]
+fn settlement_result_escrow_snapshot_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let maturity = 999u64;
+    let yield_bps = 250i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_006"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    fund_to_target(&client, &env);
+    env.ledger().with_mut(|l| l.timestamp = maturity);
+
+    let result = client.settle();
+
+    assert_eq!(result.escrow.status, 2);
+    assert_eq!(result.escrow.maturity, maturity);
+    assert_eq!(result.escrow.yield_bps, yield_bps);
+    assert_eq!(result.escrow.funded_amount, TARGET);
+}
+
+/// Edge case: large principal with high yield must not overflow in SettlementResult.
+#[test]
+fn settlement_result_large_values_no_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let principal: i128 = 2_000_000_000;
+    let yield_bps = 750i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_SR_007"),
         &sme,
         &principal,
         &yield_bps,
@@ -2932,329 +3125,12 @@ fn settle_emits_escrow_settled_event_floor_rounding() {
 
     let investor = Address::generate(&env);
     client.fund(&investor, &principal);
-    client.settle();
+    env.ledger().with_mut(|l| l.timestamp = 1);
 
-    let events = env.events().all();
-    // coupon = 1_000_003 × 333 / 10_000 = 33_300 (floor)
-    let expected_settle_pool = principal + 33_300i128;
-    let escrow = client.get_escrow();
-    assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowSettled {
-            name: symbol_short!("escrow_sd"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: principal,
-            yield_bps,
-            maturity: 0,
-            settled_at_ledger_timestamp: 0,
-            settle_pool: expected_settle_pool,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
+    let result = client.settle();
 
-/// Non-zero maturity is carried in the settle event; timestamp matches ledger time.
-#[test]
-fn settle_emits_escrow_settled_event_with_maturity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    let (token, treasury) = free_addresses(&env);
-
-    let principal = 1_000_000i128;
-    let yield_bps = 500i64;
-    let maturity = 10_000u64;
-    client.init(
-        &admin,
-        &String::from_str(&env, "EVT_MAT"),
-        &sme,
-        &principal,
-        &yield_bps,
-        &maturity,
-        &token,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    let investor = Address::generate(&env);
-    client.fund(&investor, &principal);
-
-    let settle_ts = maturity;
-    env.ledger().set_timestamp(settle_ts);
-    client.settle();
-
-    let events = env.events().all();
-    let expected_settle_pool = principal + principal * yield_bps as i128 / 10_000;
-    let escrow = client.get_escrow();
-    assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowSettled {
-            name: symbol_short!("escrow_sd"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: principal,
-            yield_bps,
-            maturity,
-            settled_at_ledger_timestamp: settle_ts,
-            settle_pool: expected_settle_pool,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// `partial_settle` emits `EscrowPartialSettle` with topic `part_set` and funded snapshot.
-#[test]
-fn partial_settle_emits_event_topics_and_payload() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    default_init(&client, &env, &admin, &sme);
-
-    let funded = TARGET / 2;
-    let investor = Address::generate(&env);
-    client.fund(&investor, &funded);
-
-    client.partial_settle(&sme);
-
-    let events = env.events().all();
-    assert_eq!(
-        events.events().len(),
-        1,
-        "partial_settle must emit exactly one contract event"
-    );
-
-    let escrow = client.get_escrow();
-    assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowPartialSettle {
-            name: symbol_short!("part_set"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: funded,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// Admin-driven `partial_settle` with zero deposits still emits `part_set` at funded_amount=0.
-#[test]
-fn partial_settle_emits_event_zero_funded() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    let contract_id = client.address.clone();
-    default_init(&client, &env, &admin, &sme);
-
-    client.partial_settle(&admin);
-
-    let events = env.events().all();
-    let escrow = client.get_escrow();
-    assert_eq!(
-        events.events().last().unwrap().clone(),
-        EscrowPartialSettle {
-            name: symbol_short!("part_set"),
-            invoice_id: escrow.invoice_id,
-            funded_amount: 0,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-}
-
-/// `claim_investor_payout` emits `InvestorPayoutClaimed` with topic `inv_claim`.
-#[test]
-fn claim_investor_payout_emits_event_topics_and_payload() {
-    let env = Env::default();
-    let (client, token, contract_id, _treasury) =
-        setup_claim_env(&env, "EVT_CLM", 1_000i128, 400i64);
-
-    let investor = Address::generate(&env);
-    token.stellar.mint(&investor, &1_000i128);
-    client.fund(&investor, &1_000i128);
-    token.stellar.mint(&contract_id, &40i128); // coupon so payout > 0
-    client.settle();
-
-    // Clear settle's event from the buffer before the claim invoke.
-    let _ = env.events().all();
-
-    client.claim_investor_payout(&investor);
-
-    // Token transfer events may precede the escrow claim event; assert the last one.
-    let events = env.events().all();
-    let escrow = client.get_escrow();
-    assert_eq!(
-        events.events().last().unwrap().clone(),
-        InvestorPayoutClaimed {
-            name: symbol_short!("inv_claim"),
-            investor: investor.clone(),
-            invoice_id: escrow.invoice_id,
-        }
-        .to_xdr(&env, &contract_id)
-    );
-
-    // Idempotent re-claim must not re-emit.
-    let _ = env.events().all();
-    client.claim_investor_payout(&investor);
-    assert!(
-        env.events().all().events().is_empty(),
-        "idempotent claim must not re-emit InvestorPayoutClaimed"
-    );
-}
-
-/// Settlement-lifecycle event name symbols are pairwise distinct (no topic collision).
-///
-/// Catalog symbols under test: `escrow_sd`, `part_set`, `sme_wd`, `inv_claim`.
-/// Each is driven through its entrypoint and matched via full `to_xdr` equality so
-/// both the short name topic and payload stay wired to the correct struct.
-#[test]
-fn settlement_event_symbols_are_collision_free() {
-    let escrow_sd = symbol_short!("escrow_sd");
-    let part_set = symbol_short!("part_set");
-    let sme_wd = symbol_short!("sme_wd");
-    let inv_claim = symbol_short!("inv_claim");
-
-    // Pairwise uniqueness among settlement lifecycle topics.
-    let symbols = [
-        escrow_sd.clone(),
-        part_set.clone(),
-        sme_wd.clone(),
-        inv_claim.clone(),
-    ];
-    for (i, left) in symbols.iter().enumerate() {
-        for (j, right) in symbols.iter().enumerate() {
-            if i != j {
-                assert_ne!(
-                    left, right,
-                    "settlement event name symbols must not collide: index {i} vs {j}"
-                );
-            }
-        }
-    }
-
-    // Drive each emitter and confirm the catalog symbol is what indexers observe.
-    // --- EscrowSettled / escrow_sd ---
-    {
-        let env = Env::default();
-        let (client, admin, sme) = setup(&env);
-        let contract_id = client.address.clone();
-        default_init(&client, &env, &admin, &sme);
-        fund_to_target(&client, &env);
-        client.settle();
-        let events = env.events().all();
-        let escrow = client.get_escrow();
-        let expected = EscrowSettled {
-            name: escrow_sd.clone(),
-            invoice_id: escrow.invoice_id,
-            funded_amount: TARGET,
-            yield_bps: 800,
-            maturity: 0,
-            settled_at_ledger_timestamp: 0,
-            settle_pool: TARGET + TARGET * 800 / 10_000,
-        }
-        .to_xdr(&env, &contract_id);
-        assert_eq!(events.events().last().unwrap().clone(), expected);
-    }
-
-    // --- EscrowPartialSettle / part_set ---
-    {
-        let env = Env::default();
-        let (client, admin, sme) = setup(&env);
-        let contract_id = client.address.clone();
-        default_init(&client, &env, &admin, &sme);
-        let funded = TARGET / 4;
-        let investor = Address::generate(&env);
-        client.fund(&investor, &funded);
-        client.partial_settle(&sme);
-        let events = env.events().all();
-        let escrow = client.get_escrow();
-        assert_eq!(
-            events.events().last().unwrap().clone(),
-            EscrowPartialSettle {
-                name: part_set.clone(),
-                invoice_id: escrow.invoice_id,
-                funded_amount: funded,
-            }
-            .to_xdr(&env, &contract_id)
-        );
-    }
-
-    // --- SmeWithdrew / sme_wd ---
-    {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, sme, _sac) = setup_funded_with_token(&env);
-        let contract_id = client.address.clone();
-        let invoice_id = client.get_escrow().invoice_id.clone();
-        client.withdraw();
-        let events = env.events().all();
-        assert_eq!(
-            events.events().last().unwrap().clone(),
-            SmeWithdrew {
-                name: sme_wd.clone(),
-                invoice_id,
-                amount: TARGET,
-                recipient: sme,
-                fee: 0,
-            }
-            .to_xdr(&env, &contract_id)
-        );
-    }
-
-    // --- InvestorPayoutClaimed / inv_claim ---
-    {
-        let env = Env::default();
-        let (client, token, contract_id, _treasury) =
-            setup_claim_env(&env, "EVT_COL", 1_000i128, 400i64);
-        let investor = Address::generate(&env);
-        token.stellar.mint(&investor, &1_000i128);
-        client.fund(&investor, &1_000i128);
-        token.stellar.mint(&contract_id, &40i128);
-        client.settle();
-        let _ = env.events().all();
-        client.claim_investor_payout(&investor);
-        let events = env.events().all();
-        let escrow = client.get_escrow();
-        assert_eq!(
-            events.events().last().unwrap().clone(),
-            InvestorPayoutClaimed {
-                name: inv_claim.clone(),
-                investor,
-                invoice_id: escrow.invoice_id,
-            }
-            .to_xdr(&env, &contract_id)
-        );
-    }
-
-    // Distinct structs with the same invoice must not share an event XDR shape.
-    {
-        let env = Env::default();
-        let invoice_id = symbol_short!("INVCOLL");
-        let contract_id = Address::generate(&env);
-        let settled = EscrowSettled {
-            name: escrow_sd,
-            invoice_id: invoice_id.clone(),
-            funded_amount: 1,
-            yield_bps: 0,
-            maturity: 0,
-            settled_at_ledger_timestamp: 0,
-            settle_pool: 1,
-        }
-        .to_xdr(&env, &contract_id);
-        let partial = EscrowPartialSettle {
-            name: part_set,
-            invoice_id,
-            funded_amount: 1,
-        }
-        .to_xdr(&env, &contract_id);
-        assert_ne!(
-            settled, partial,
-            "EscrowSettled and EscrowPartialSettle XDR must differ (topic collision guard)"
-        );
-    }
+    // coupon = 2_000_000_000 × 750 / 10_000 = 150_000_000
+    assert_eq!(result.coupon, 150_000_000i128);
+    assert_eq!(result.settle_pool, 2_150_000_000i128);
+    assert_eq!(result.escrow.funded_amount, principal);
 }

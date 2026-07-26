@@ -89,7 +89,7 @@ proptest! {
         if amount >= target {
             prop_assert_eq!(after_fund.status, 1);
             let after_settle = client.settle();
-            prop_assert_eq!(after_settle.status, 2);
+            prop_assert_eq!(after_settle.escrow.status, 2);
         } else {
             prop_assert_eq!(after_fund.status, 0);
         }
@@ -395,7 +395,7 @@ fn prop_status_settle_transition() {
     assert_eq!(before_settle.status, 1, "status before settle must be 1");
 
     let after_settle = client.settle();
-    assert_eq!(after_settle.status, 2, "settle must transition to 2");
+    assert_eq!(after_settle.escrow.status, 2, "settle must transition to 2");
 }
 
 #[test]
@@ -481,9 +481,15 @@ fn prop_no_regression_from_funded_status() {
     assert_eq!(funded.status, 1, "must be funded");
 
     let settled = client.settle();
-    assert!(settled.status >= 1, "status must not decrease after settle");
-    assert_ne!(settled.status, 0, "status must never regress to 0");
-    assert_ne!(settled.status, 1, "after settle status must not be 1");
+    assert!(
+        settled.escrow.status >= 1,
+        "status must not decrease after settle"
+    );
+    assert_ne!(settled.escrow.status, 0, "status must never regress to 0");
+    assert_ne!(
+        settled.escrow.status, 1,
+        "after settle status must not be 1"
+    );
 }
 
 #[test]

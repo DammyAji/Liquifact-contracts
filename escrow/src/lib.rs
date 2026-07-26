@@ -1156,6 +1156,30 @@ pub struct SettlementReadiness {
     pub ready_now: bool,
 }
 
+/// Typed return value from [`LiquifactEscrow::settle`].
+///
+/// Replaces the previous opaque tuple / raw [`InvoiceEscrow`] return with a
+/// documented struct that bundles the post-settlement escrow state together
+/// with the settlement-specific computed values callers need.
+///
+/// # Fields
+/// - `escrow`: The full post-settlement escrow snapshot (status == 2).
+/// - `coupon`: The computed coupon (`funded_amount × yield_bps / 10_000`, floor).
+/// - `settle_pool`: Total settlement pool (`funded_amount + coupon`).
+/// - `settled_at`: Ledger timestamp when settlement occurred.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettlementResult {
+    /// Post-settlement escrow snapshot (status == 2).
+    pub escrow: InvoiceEscrow,
+    /// Coupon: `funded_amount × yield_bps / 10_000` (floor, checked).
+    pub coupon: i128,
+    /// Total settlement pool: `funded_amount + coupon`.
+    pub settle_pool: i128,
+    /// Ledger timestamp at which settlement was recorded.
+    pub settled_at: u64,
+}
+
 // --- Events ---
 
 #[contractevent]
@@ -4813,8 +4837,8 @@ impl LiquifactEscrow {
         escrow
     }
 
-    pub fn settle(env: Env) -> InvoiceEscrow {
-        // Operational pause gate (read-only), orthogonal to legal hold.
+    pub fn settle(env: Env) -> SettlementResult {
+        // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
             &env,
             !Self::paused_active(&env),
@@ -4869,7 +4893,12 @@ impl LiquifactEscrow {
         }
         .publish(&env);
 
-        escrow
+        SettlementResult {
+            escrow,
+            coupon,
+            settle_pool,
+            settled_at: now,
+        }
     }
 
     /// Batch settle entrypoint: settle multiple escrows in a single call.

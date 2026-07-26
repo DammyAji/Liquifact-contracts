@@ -259,11 +259,11 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
 
     let settled_escrow = client.settle();
     assert_eq!(
-        settled_escrow.status, 2,
+        settled_escrow.escrow.status, 2,
         "Should transition to Settled status"
     );
     assert_eq!(
-        settled_escrow.funded_amount, total_funded,
+        settled_escrow.escrow.funded_amount, total_funded,
         "Funded amount should be preserved"
     );
 
@@ -447,7 +447,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
 
     // Settle the escrow
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 
     // Verify claim locks are enforced
     let current_time = env.ledger().timestamp();
@@ -807,7 +807,7 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
 
     let settled_state = client.settle();
     assert_eq!(
-        settled_state.status, 2,
+        settled_state.escrow.status, 2,
         "escrow should settle after hold is cleared"
     );
 
