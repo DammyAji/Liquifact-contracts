@@ -4142,7 +4142,6 @@ fn test_fund_batch_rejects_oversized() {
 }
 
 #[test]
-#[ignore = "upstream latent: escrow API/test drift"]
 fn test_fund_batch_equals_n_single_funds() {
     let env = Env::default();
 
@@ -4156,34 +4155,8 @@ fn test_fund_batch_equals_n_single_funds() {
 
     let sme = Address::generate(&env);
 
-    let (tok, tre) = free_addresses(&env);
-
-    // Initialize both identical escrows
-
-    let target = 100_000i128;
-
-    for client in &[&client_a, &client_b] {
-        client.init(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "BATCH001"),
-            &sme,
-            &target,
-            &800i64,
-            &0u64,
-            &tok,
-            &None,
-            &Address::generate(&env),
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None,
-            &None::<i64>,
-        );
-    }
+    default_init(&client_a, &env, &admin, &sme);
+    default_init(&client_b, &env, &admin, &sme);
 
     // Create 5 investors
 
@@ -4502,42 +4475,15 @@ fn test_fund_batch_single_entry() {
 }
 
 #[test]
-#[ignore = "upstream latent: escrow API/test drift"]
 fn test_fund_batch_max_batch_size() {
     let env = Env::default();
 
-    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
 
-    let client = deploy(&env);
+    env.cost_estimate().disable_resource_limits();
+    env.cost_estimate().budget().reset_unlimited();
 
-    let admin = Address::generate(&env);
-
-    let sme = Address::generate(&env);
-
-    let (tok, tre) = free_addresses(&env);
-
-    let target = 10_000_000i128; // Very large target
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "MAXBATCH"),
-        &sme,
-        &target,
-        &800i64,
-        &0u64,
-        &tok,
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    default_init(&client, &env, &admin, &sme);
 
     // Create exactly MAX_FUND_BATCH entries
 
