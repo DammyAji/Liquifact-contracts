@@ -829,15 +829,49 @@ fn test_revoked_digests_view_pagination_and_empty_past_end() {
 }
 
 #[test]
-#[ignore = "branch-specific latent failure"]
-fn test_revoked_digests_view_caps_limit() {
+fn test_revoked_digests_view_rejects_limit_over_max() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    for i in 0u8..10 {
+    assert_contract_error(
+        client.try_get_revoked_attestation_digests(
+            &0,
+            &(crate::MAX_ATTESTATION_READ_PAGE.saturating_add(1)),
+        ),
+        EscrowError::AttestationReadLimitTooLarge,
+    );
+}
+
+#[test]
+fn test_revoked_digests_view_rejects_zero_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    assert_contract_error(
+        client.try_get_revoked_attestation_digests(&0, &0),
+        EscrowError::AttestationReadLimitZero,
+    );
+}
+
+#[test]
+fn test_revoked_digests_view_accepts_min_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.revoke_attestation_digest(&0);
+
+    let page = client.get_revoked_attestation_digests(&0, &1);
+    assert_eq!(page.len(), 1);
+}
+
+#[test]
+fn test_revoked_digests_view_accepts_max_limit() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    for i in 0u8..(crate::MAX_ATTESTATION_READ_PAGE as u8) {
         client.append_attestation_digest(&digest(&env, i));
         client.revoke_attestation_digest(&(i as u32));
     }
-    let page = client.get_revoked_attestation_digests(&0, &100);
+
+    let page = client.get_revoked_attestation_digests(&0, &crate::MAX_ATTESTATION_READ_PAGE);
     assert_eq!(page.len(), crate::MAX_ATTESTATION_READ_PAGE);
 }
 
