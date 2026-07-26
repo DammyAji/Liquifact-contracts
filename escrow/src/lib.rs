@@ -576,6 +576,10 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::update_funding_parameters`] called while escrow is not open
+    /// (status != 0). Funding parameters may only be changed during the open window.
+    FundingParameterUpdateNotOpen = 223,
 }
 
 #[inline(always)]
@@ -954,6 +958,35 @@ pub struct FundingCloseSnapshot {
     pub closed_at_ledger_sequence: u32,
 }
 
+/// Admin-configurable funding parameters that may be updated atomically after init.
+///
+/// Each field is optional — a `None` field leaves the current value unchanged.
+/// All `Some` fields are validated against the same bounds enforced by the individual
+/// parameter setters before any storage write occurs. On success a single
+/// [`FundingParametersUpdated`] event is emitted carrying the updated values.
+///
+/// Derive rationale:
+/// - `Clone`: required by event emission (event struct is consumed by `.publish`).
+/// - `Debug`: improves failure diagnostics in tests.
+/// - `PartialEq`: allows deterministic assertion of stored/read values.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundingParameters {
+    /// Minimum per-call contribution floor. When `Some`, must be positive and strictly
+    /// lower than the current floor (same rule as [`LiquifactEscrow::lower_min_contribution_floor`]).
+    pub min_contribution_floor: Option<i128>,
+    /// Maximum distinct investor addresses. When `Some`, a cap must already exist and
+    /// the new value must be strictly higher (same rule as [`LiquifactEscrow::raise_max_unique_investors`]).
+    pub max_unique_investors_cap: Option<u32>,
+    /// Maximum principal per investor address. When `Some`, a cap must already exist and
+    /// the new value must be strictly higher (same rule as [`LiquifactEscrow::raise_max_per_investor`]).
+    pub max_per_investor_cap: Option<i128>,
+    /// Optional funding deadline. When `Some`, a deadline must already exist, must not
+    /// have passed, must be strictly later, and must be before maturity if set
+    /// (same rule as [`LiquifactEscrow::extend_funding_deadline`]).
+    pub funding_deadline: Option<u64>,
+}
+
 /// Custom option-like enum to represent the captured funding close snapshot.
 /// Models standard option semantics as a contracttype to avoid standard library
 /// blanket trait limitations in Soroban SDK testutils.
@@ -1083,6 +1116,25 @@ pub struct MaxPerInvestorCapRaised {
     pub invoice_id: Symbol,
     pub old_cap: i128,
     pub new_cap: i128,
+}
+
+/// Emitted by [`LiquifactEscrow::update_funding_parameters`] after one or more
+/// funding parameters are updated atomically. Each field that changed carries
+/// `Some(new_value)`; unchanged fields are `None`.
+#[contractevent]
+pub struct FundingParametersUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// New minimum contribution floor, or `None` if unchanged.
+    pub min_contribution_floor: Option<i128>,
+    /// New maximum unique investor cap, or `None` if unchanged.
+    pub max_unique_investors_cap: Option<u32>,
+    /// New per-investor cap, or `None` if unchanged.
+    pub max_per_investor_cap: Option<i128>,
+    /// New funding deadline, or `None` if unchanged.
+    pub funding_deadline: Option<u64>,
 }
 
 #[contractevent]
@@ -4969,6 +5021,150 @@ impl LiquifactEscrow {
         .publish(&env);
 
         new_horizon
+    }
+
+    /// Atomically update one or more funding parameters in a single admin-guarded call.
+    ///
+    /// Each `Some` field in [`FundingParameters`] is validated against the same bounds
+    /// enforced by the individual parameter setters. All validation runs before any
+    /// storage write — if any parameter is out of range the entire call is rejected
+    /// and no state is modified.
+    ///
+    /// # Authorization
+    /// Requires the signature of the current [`InvoiceEscrow::admin`].
+    ///
+    /// # Errors
+    /// - [`EscrowError::FundingParameterUpdateNotOpen`] if the escrow is not open (status != 0).
+    /// - [`EscrowError::NewFloorNotPositive`] if `min_contribution_floor` ≤ `0`.
+    /// - [`EscrowError::NewFloorNotLower`] if `min_contribution_floor` ≥ current floor.
+    /// - [`EscrowError::NoInvestorCapConfigured`] if `max_unique_investors_cap` is `Some`
+    ///   but no cap was configured at init.
+    /// - [`EscrowError::NewCapNotHigher`] if `max_unique_investors_cap` ≤ current cap.
+    /// - [`EscrowError::MaxPerInvestorCapNotConfigured`] if `max_per_investor_cap` is `Some`
+    ///   but no cap was configured at init.
+    /// - [`EscrowError::MaxPerInvestorCapNotRaised`] if `max_per_investor_cap` ≤ current cap.
+    /// - [`EscrowError::FundingDeadlineNotSet`] if `funding_deadline` is `Some`
+    ///   but no deadline was configured at init.
+    /// - [`EscrowError::FundingDeadlinePassed`] if the existing deadline has already elapsed.
+    /// - [`EscrowError::FundingDeadlineNotExtended`] if `funding_deadline` ≤ current deadline.
+    /// - [`EscrowError::FundingDeadlineBeyondMaturity`] if `funding_deadline` ≥ maturity.
+    ///
+    /// # Events
+    /// Emits [`FundingParametersUpdated`] with the new values for each updated parameter.
+    pub fn update_funding_parameters(env: Env, params: FundingParameters) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        guard_status_eq(
+            &env,
+            escrow.status,
+            0,
+            EscrowError::FundingParameterUpdateNotOpen,
+        );
+
+        // --- Validate all parameters before any state mutation ---
+
+        if let Some(new_floor) = params.min_contribution_floor {
+            ensure(&env, new_floor > 0, EscrowError::NewFloorNotPositive);
+            let old_floor: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MinContributionFloor)
+                .unwrap_or(0);
+            ensure(&env, new_floor < old_floor, EscrowError::NewFloorNotLower);
+        }
+
+        if let Some(new_cap) = params.max_unique_investors_cap {
+            let old_cap: Option<u32> = env
+                .storage()
+                .instance()
+                .get(&DataKey::MaxUniqueInvestorsCap);
+            ensure(
+                &env,
+                old_cap.is_some(),
+                EscrowError::NoInvestorCapConfigured,
+            );
+            ensure(
+                &env,
+                new_cap > old_cap.unwrap(),
+                EscrowError::NewCapNotHigher,
+            );
+        }
+
+        if let Some(new_cap) = params.max_per_investor_cap {
+            let old_cap: Option<i128> = env.storage().instance().get(&DataKey::MaxPerInvestorCap);
+            ensure(
+                &env,
+                old_cap.is_some(),
+                EscrowError::MaxPerInvestorCapNotConfigured,
+            );
+            ensure(
+                &env,
+                new_cap > old_cap.unwrap(),
+                EscrowError::MaxPerInvestorCapNotRaised,
+            );
+        }
+
+        if let Some(new_deadline) = params.funding_deadline {
+            let old_deadline = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::FundingDeadline)
+                .unwrap_or_else(|| fail(&env, EscrowError::FundingDeadlineNotSet));
+
+            ensure(
+                &env,
+                env.ledger().timestamp() <= old_deadline,
+                EscrowError::FundingDeadlinePassed,
+            );
+            ensure(
+                &env,
+                new_deadline > old_deadline,
+                EscrowError::FundingDeadlineNotExtended,
+            );
+            if escrow.maturity > 0 {
+                ensure(
+                    &env,
+                    new_deadline < escrow.maturity,
+                    EscrowError::FundingDeadlineBeyondMaturity,
+                );
+            }
+        }
+
+        // --- All validations passed — write changes ---
+
+        if let Some(new_floor) = params.min_contribution_floor {
+            env.storage()
+                .instance()
+                .set(&DataKey::MinContributionFloor, &new_floor);
+        }
+
+        if let Some(new_cap) = params.max_unique_investors_cap {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxUniqueInvestorsCap, &new_cap);
+        }
+
+        if let Some(new_cap) = params.max_per_investor_cap {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxPerInvestorCap, &new_cap);
+        }
+
+        if let Some(new_deadline) = params.funding_deadline {
+            env.storage()
+                .instance()
+                .set(&DataKey::FundingDeadline, &new_deadline);
+        }
+
+        FundingParametersUpdated {
+            name: symbol_short!("fund_prm"),
+            invoice_id: escrow.invoice_id,
+            min_contribution_floor: params.min_contribution_floor,
+            max_unique_investors_cap: params.max_unique_investors_cap,
+            max_per_investor_cap: params.max_per_investor_cap,
+            funding_deadline: params.funding_deadline,
+        }
+        .publish(&env);
     }
 
     pub fn bump_ttl(env: Env, allowlisted: Vec<Address>) {
