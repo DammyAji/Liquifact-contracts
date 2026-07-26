@@ -1229,6 +1229,47 @@ pub struct SettlementResult {
     pub settled_at: u64,
 }
 
+/// Read-only snapshot of all settlement-relevant configuration.
+///
+/// Returned by [`LiquifactEscrow::get_settlement_config`]. Every field is read from
+/// on-chain storage with the same defaults the contract applies at [`LiquifactEscrow::init`],
+/// so the view is safe to call before initialization — callers receive the pre-init
+/// defaults without a panic.
+///
+/// # Fields
+/// - `yield_bps`: Base coupon yield in basis points (`0..=10_000`).
+/// - `maturity`: Maturity timestamp; `0` means no maturity lock.
+/// - `protocol_fee_bps`: Immutable protocol fee applied at [`LiquifactEscrow::withdraw`].
+/// - `yield_tiers`: Optional tier ladder for investor-specific yields.
+/// - `maturity_max_horizon`: Maximum allowed maturity horizon (seconds from ledger time).
+/// - `funding_deadline`: Optional deadline after which funding is rejected.
+/// - `min_contribution_floor`: Minimum per-deposit amount (0 = no floor).
+/// - `max_unique_investors_cap`: Optional cap on distinct investor addresses.
+/// - `max_per_investor_cap`: Optional cap on principal per single investor.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettlementConfig {
+    /// Base coupon yield in basis points (`0..=10_000`); `0` before init.
+    pub yield_bps: i64,
+    /// Maturity timestamp; `0` means no maturity lock.
+    pub maturity: u64,
+    /// Immutable protocol fee in basis points applied at withdraw; `0` before init.
+    pub protocol_fee_bps: i64,
+    /// Optional tier ladder for investor-specific yields; empty before init.
+    pub yield_tiers: Vec<YieldTier>,
+    /// Maximum allowed maturity horizon in seconds from current ledger time.
+    /// Falls back to [`DEFAULT_MATURITY_MAX_HORIZON_SECS`].
+    pub maturity_max_horizon: u64,
+    /// Optional deadline after which new deposits are rejected.
+    pub funding_deadline: Option<u64>,
+    /// Minimum per-deposit amount in token base units; `0` means no floor.
+    pub min_contribution_floor: i128,
+    /// Optional cap on distinct investor addresses; `None` means unlimited.
+    pub max_unique_investors_cap: Option<u32>,
+    /// Optional cap on total principal per single investor; `None` means unlimited.
+    pub max_per_investor_cap: Option<i128>,
+}
+
 // --- Events ---
 
 #[contractevent]
@@ -3535,6 +3576,77 @@ impl LiquifactEscrow {
             legal_hold_active,
             maturity_reached,
             ready_now: is_settleable,
+        }
+    }
+
+    /// Read-only snapshot of all settlement-relevant configuration.
+    ///
+    /// Returns the current values of every parameter that affects settlement economics
+    /// and funding guards in a single [`SettlementConfig`] struct. Integrators can use
+    /// this view to display the full configuration without calling multiple individual
+    /// getters.
+    ///
+    /// # Pre-init safety
+    /// Every field is read from storage independently with `unwrap_or(default)`, matching
+    /// the same defaults the contract applies at [`LiquifactEscrow::init`]. The view
+    /// therefore returns sensible defaults before initialization without panicking.
+    ///
+    /// # Read-only
+    /// Pure view: no `require_auth`, no storage writes, and no TTL bump.
+    pub fn get_settlement_config(env: Env) -> SettlementConfig {
+        let (yield_bps, maturity) = match env
+            .storage()
+            .instance()
+            .get::<DataKey, InvoiceEscrow>(&DataKey::Escrow)
+        {
+            Some(e) => (e.yield_bps, e.maturity),
+            None => (0, 0),
+        };
+
+        let protocol_fee_bps: i64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+
+        let yield_tiers: Vec<YieldTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::YieldTierTable)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        let maturity_max_horizon: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaturityMaxHorizon)
+            .unwrap_or(DEFAULT_MATURITY_MAX_HORIZON_SECS);
+
+        let funding_deadline: Option<u64> = env.storage().instance().get(&DataKey::FundingDeadline);
+
+        let min_contribution_floor: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinContributionFloor)
+            .unwrap_or(0);
+
+        let max_unique_investors_cap: Option<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxUniqueInvestorsCap);
+
+        let max_per_investor_cap: Option<i128> =
+            env.storage().instance().get(&DataKey::MaxPerInvestorCap);
+
+        SettlementConfig {
+            yield_bps,
+            maturity,
+            protocol_fee_bps,
+            yield_tiers,
+            maturity_max_horizon,
+            funding_deadline,
+            min_contribution_floor,
+            max_unique_investors_cap,
+            max_per_investor_cap,
         }
     }
 

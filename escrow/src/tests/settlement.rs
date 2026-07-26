@@ -22,8 +22,8 @@ use super::{
     install_stellar_asset_token, setup, StellarTestToken, MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
 use crate::{
-    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementReadiness,
-    SettlementResult, YieldTier,
+    EscrowError, EscrowSettled, InvoiceEscrow, LiquifactEscrow, SettlementConfig,
+    SettlementReadiness, SettlementResult, YieldTier,
 };
 use soroban_sdk::{
     symbol_short,
@@ -3133,4 +3133,246 @@ fn settlement_result_large_values_no_overflow() {
     assert_eq!(result.coupon, 150_000_000i128);
     assert_eq!(result.settle_pool, 2_150_000_000i128);
     assert_eq!(result.escrow.funded_amount, principal);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// get_settlement_config — read-only config view
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Before init, `get_settlement_config` must return sensible defaults without panicking.
+#[test]
+fn settlement_config_returns_defaults_before_init() {
+    let env = Env::default();
+    let client = deploy(&env);
+
+    let config = client.get_settlement_config();
+
+    assert_eq!(config.yield_bps, 0);
+    assert_eq!(config.maturity, 0u64);
+    assert_eq!(config.protocol_fee_bps, 0);
+    assert!(config.yield_tiers.is_empty());
+    assert_eq!(
+        config.maturity_max_horizon,
+        crate::DEFAULT_MATURITY_MAX_HORIZON_SECS
+    );
+    assert_eq!(config.funding_deadline, None);
+    assert_eq!(config.min_contribution_floor, 0i128);
+    assert_eq!(config.max_unique_investors_cap, None);
+    assert_eq!(config.max_per_investor_cap, None);
+}
+
+/// After init, `get_settlement_config` must return the configured values.
+#[test]
+fn settlement_config_reflects_init_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let yield_bps = 800i64;
+    let maturity = 50_000u64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_CFG_001"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let config = client.get_settlement_config();
+
+    assert_eq!(config.yield_bps, yield_bps);
+    assert_eq!(config.maturity, maturity);
+    assert_eq!(config.protocol_fee_bps, 0); // not passed in init
+    assert!(config.yield_tiers.is_empty());
+    assert_eq!(
+        config.maturity_max_horizon,
+        crate::DEFAULT_MATURITY_MAX_HORIZON_SECS
+    );
+}
+
+/// Init with `protocol_fee_bps` must be reflected in the config view.
+#[test]
+fn settlement_config_reflects_protocol_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let fee_bps = 250i64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_CFG_002"),
+        &sme,
+        &TARGET,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(fee_bps),
+    );
+
+    let config = client.get_settlement_config();
+    assert_eq!(config.protocol_fee_bps, fee_bps);
+}
+
+/// Init with yield tiers must be reflected in the config view.
+#[test]
+fn settlement_config_reflects_yield_tiers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let tiers = soroban_sdk::Vec::from_array(
+        &env,
+        [
+            YieldTier {
+                min_lock_secs: 0,
+                yield_bps: 500,
+            },
+            YieldTier {
+                min_lock_secs: 86400,
+                yield_bps: 750,
+            },
+            YieldTier {
+                min_lock_secs: 604800,
+                yield_bps: 1000,
+            },
+        ],
+    );
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_CFG_003"),
+        &sme,
+        &TARGET,
+        &500i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &Some(tiers.clone()),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let config = client.get_settlement_config();
+    assert_eq!(config.yield_tiers.len(), 3);
+    assert_eq!(config.yield_tiers.get(0).unwrap(), tiers.get(0).unwrap());
+    assert_eq!(config.yield_tiers.get(1).unwrap(), tiers.get(1).unwrap());
+    assert_eq!(config.yield_tiers.get(2).unwrap(), tiers.get(2).unwrap());
+}
+
+/// Init with maturity must be reflected in the config view.
+#[test]
+fn settlement_config_reflects_maturity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    let maturity = 100_000u64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_CFG_004"),
+        &sme,
+        &TARGET,
+        &600i64,
+        &maturity,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let config = client.get_settlement_config();
+    assert_eq!(config.maturity, maturity);
+}
+
+/// Config view is pure read-only — must not alter storage.
+#[test]
+fn settlement_config_is_pure_read_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "INV_CFG_005"),
+        &sme,
+        &TARGET,
+        &400i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let before = client.get_settlement_config();
+    let _ = client.get_settlement_config(); // call twice
+    let after = client.get_settlement_config();
+
+    assert_eq!(before, after);
 }
