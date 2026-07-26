@@ -811,3 +811,27 @@ fn pause_toggle_cycle() {
     let escrow = client.fund(&investor, &TARGET);
     assert_eq!(escrow.status, 1);
 }
+
+// ── 15. Shared helper direct tests ───────────────────────────────────────────
+
+#[test]
+fn guard_not_paused_helper_passes_when_not_paused() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "PAU031");
+
+    // Guard passes without error when paused flag is false
+    crate::guard_not_paused(&env, EscrowError::PausedBlocksFunding);
+}
+
+#[test]
+#[should_panic]
+fn guard_not_paused_helper_panics_when_paused() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    init_open(&client, &env, &admin, &sme, "PAU032");
+    client.set_paused(&true);
+
+    // Guard panics with caller-supplied error variant when paused flag is true
+    crate::guard_not_paused(&env, EscrowError::PausedBlocksFunding);
+}
