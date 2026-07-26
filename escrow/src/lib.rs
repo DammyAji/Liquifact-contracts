@@ -4680,9 +4680,10 @@ impl LiquifactEscrow {
         Self::set_persistent_investor_contribution(&env, investor.clone(), new_contribution);
 
         if prev == 0 {
-            env.storage()
-                .instance()
-                .set(&keys::unique_funder_count(), &(cur_funder_count + 1));
+            env.storage().instance().set(
+                &DataKey::UniqueFunderCount,
+                &cur_funder_count.saturating_add(1),
+            );
 
             let mut index: Vec<Address> = env
                 .storage()
