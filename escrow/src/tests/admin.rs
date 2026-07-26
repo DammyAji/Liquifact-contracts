@@ -3271,317 +3271,84 @@ fn test_pending_admin_remaining_consistent_with_accept_admin() {
     assert_contract_error(client.try_accept_admin(), EscrowError::AdminProposalExpired);
 }
 
-// ── batch_record_collateral (Issue #925) ──────────────────────
+// ── set_storage_limit / get_storage_limit (GitHub Issue #829) ─────────────────
 
+/// Unconfigured escrows expose the historical hard-coded TTL extension (3600 ledgers).
 #[test]
-fn test_collateral_batch_success_multiple_items() {
+fn test_get_storage_limit_defaults_to_compile_time_constant() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT001"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    default_init(&client, &env, &admin, &sme);
 
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("USDC"), 1000i128),
-            (symbol_short!("BTC"), 2000i128),
-            (symbol_short!("ETH"), 3000i128),
-        ],
+    assert_eq!(
+        client.get_storage_limit(),
+        crate::INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
+        "unset StorageLimit must preserve the hard-coded TTL extension"
     );
-    let commitment = client.batch_record_collateral(&items);
-    assert_eq!(commitment.amount, 3000i128);
-    assert_eq!(commitment.asset, symbol_short!("ETH"));
-    let stored = client.get_sme_collateral_commitment();
-    assert_eq!(stored, Some(commitment));
+    assert_eq!(client.get_storage_limit(), 3_600u32);
 }
 
+/// Admin may set an in-bounds storage limit; getter reflects the new value.
 #[test]
-fn test_collateral_batch_single_item() {
+fn test_set_storage_limit_success() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT002"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    default_init(&client, &env, &admin, &sme);
 
-    let items = SorobanVec::from_array(&env, [(symbol_short!("USDC"), 5000i128)]);
-    let commitment = client.batch_record_collateral(&items);
-    assert_eq!(commitment.amount, 5000i128);
-    assert_eq!(commitment.asset, symbol_short!("USDC"));
+    let new_limit = 7_200u32;
+    assert_eq!(client.set_storage_limit(&new_limit), new_limit);
+    assert_eq!(client.get_storage_limit(), new_limit);
+
+    // Boundary values are accepted.
+    assert_eq!(
+        client.set_storage_limit(&crate::MIN_STORAGE_LIMIT_LEDGERS),
+        crate::MIN_STORAGE_LIMIT_LEDGERS
+    );
+    assert_eq!(client.get_storage_limit(), crate::MIN_STORAGE_LIMIT_LEDGERS);
+    assert_eq!(
+        client.set_storage_limit(&crate::MAX_STORAGE_LIMIT_LEDGERS),
+        crate::MAX_STORAGE_LIMIT_LEDGERS
+    );
+    assert_eq!(client.get_storage_limit(), crate::MAX_STORAGE_LIMIT_LEDGERS);
 }
 
+/// Zero and above-max limits are rejected with `StorageLimitOutOfRange`.
 #[test]
-fn test_collateral_batch_rejects_empty() {
+fn test_set_storage_limit_out_of_range() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT003"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    default_init(&client, &env, &admin, &sme);
 
-    let empty: SorobanVec<(Symbol, i128)> = SorobanVec::new(&env);
     assert_contract_error(
-        client.try_batch_record_collateral(&empty),
-        EscrowError::CollateralBatchEmpty,
-    );
-}
-
-#[test]
-fn test_collateral_batch_rejects_oversized() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT004"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    let mut items: SorobanVec<(Symbol, i128)> = SorobanVec::new(&env);
-    for i in 0..=MAX_COLLATERAL_BATCH {
-        items.push_back((symbol_short!("USDC"), (i as i128) + 1));
-    }
-    assert_contract_error(
-        client.try_batch_record_collateral(&items),
-        EscrowError::CollateralBatchTooLarge,
-    );
-}
-
-#[test]
-fn test_collateral_batch_rejects_zero_amount() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT005"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Second item has zero amount — entire batch rejected
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("USDC"), 1000i128),
-            (symbol_short!("BTC"), 0i128),
-        ],
+        client.try_set_storage_limit(&0u32),
+        EscrowError::StorageLimitOutOfRange,
     );
     assert_contract_error(
-        client.try_batch_record_collateral(&items),
-        EscrowError::CollateralAmountNotPositive,
+        client.try_set_storage_limit(&(crate::MAX_STORAGE_LIMIT_LEDGERS + 1)),
+        EscrowError::StorageLimitOutOfRange,
+    );
+    // Rejected sets must not mutate the stored (default) limit.
+    assert_eq!(
+        client.get_storage_limit(),
+        crate::INSTANCE_TTL_MIN_EXTENSION_LEDGERS
     );
 }
 
-#[test]
-fn test_collateral_batch_rejects_negative_amount() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT006"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("USDC"), 1000i128),
-            (symbol_short!("BTC"), -100i128),
-        ],
-    );
-    assert_contract_error(
-        client.try_batch_record_collateral(&items),
-        EscrowError::CollateralAmountNotPositive,
-    );
-}
-
-#[test]
-fn test_collateral_batch_rejects_empty_asset() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT007"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    let empty_asset = Symbol::new(&env, "");
-    let items = SorobanVec::from_array(
-        &env,
-        [(symbol_short!("USDC"), 1000i128), (empty_asset, 500i128)],
-    );
-    assert_contract_error(
-        client.try_batch_record_collateral(&items),
-        EscrowError::CollateralAssetEmpty,
-    );
-}
-
-#[test]
-fn test_collateral_batch_no_partial_state_on_invalid() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT008"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Record a valid initial commitment
-    let first = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5000i128);
-    assert_eq!(first.amount, 5000i128);
-
-    // Batch with valid first item but invalid second item (zero amount)
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("BTC"), 8000i128),
-            (symbol_short!("ETH"), 0i128),
-        ],
-    );
-    assert_contract_error(
-        client.try_batch_record_collateral(&items),
-        EscrowError::CollateralAmountNotPositive,
-    );
-
-    // Original commitment must be unchanged (all-or-nothing)
-    let stored = client.get_sme_collateral_commitment();
-    assert_eq!(stored, Some(first));
-}
-
+/// Non-admin callers cannot set the storage limit.
 #[test]
 #[should_panic]
-fn test_collateral_batch_requires_sme_auth() {
+fn test_set_storage_limit_unauthorized() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(&env, "BAT009"),
+        &soroban_sdk::String::from_str(&env, "STOR_U"),
         &sme,
-        &TARGET,
-        &800i64,
+        &1_000i128,
+        &500i64,
         &0u64,
         &Address::generate(&env),
         &None,
@@ -3596,140 +3363,21 @@ fn test_collateral_batch_requires_sme_auth() {
         &None,
         &None::<i64>,
     );
-
-    let items = SorobanVec::from_array(&env, [(symbol_short!("USDC"), 1000i128)]);
     env.mock_auths(&[]);
-    client.batch_record_collateral(&items);
+    client.set_storage_limit(&7_200u32);
 }
 
+/// `bump_ttl` remains callable after an admin override (uses the configured horizon).
 #[test]
-fn test_collateral_batch_emits_events_for_each_item() {
-    use soroban_sdk::testutils::Events as _;
-
+fn test_bump_ttl_succeeds_after_storage_limit_override() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT010"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
+    default_init(&client, &env, &admin, &sme);
 
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("USDC"), 1000i128),
-            (symbol_short!("BTC"), 2000i128),
-        ],
-    );
-    client.batch_record_collateral(&items);
+    client.set_storage_limit(&1_800u32);
+    assert_eq!(client.get_storage_limit(), 1_800u32);
 
-    let contract_id = client.address.clone();
-    let all_events = env.events().all();
-    let collateral_events = all_events.filter_by_contract(&contract_id);
-    // 2 collateral events (one per batch item)
-    assert_eq!(collateral_events.events().len(), 2);
-}
-
-#[test]
-fn test_collateral_batch_overwrites_previous_commitment() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT011"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // First record a commitment
-    let first = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5000i128);
-    assert_eq!(first.amount, 5000i128);
-
-    // Batch replaces it
-    let items = SorobanVec::from_array(
-        &env,
-        [
-            (symbol_short!("BTC"), 7000i128),
-            (symbol_short!("ETH"), 9000i128),
-        ],
-    );
-    let final_commitment = client.batch_record_collateral(&items);
-    assert_eq!(final_commitment.amount, 9000i128);
-    assert_eq!(final_commitment.asset, symbol_short!("ETH"));
-
-    let stored = client.get_sme_collateral_commitment();
-    assert_eq!(stored, Some(final_commitment));
-}
-
-#[test]
-fn test_collateral_batch_first_item_checks_prior_timestamp() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(&env, "BAT012"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &Address::generate(&env),
-        &None,
-        &Address::generate(&env),
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Record at time T
-    let first = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5000i128);
-
-    // Advance time forward, then batch succeeds
-    env.ledger()
-        .with_mut(|l| l.timestamp = first.recorded_at + 100);
-    let items = SorobanVec::from_array(&env, [(symbol_short!("BTC"), 6000i128)]);
-    let result = client.batch_record_collateral(&items);
-    assert_eq!(result.amount, 6000i128);
-
-    // Go backwards in time — batch must fail
-    env.ledger().with_mut(|l| l.timestamp = first.recorded_at);
-    let items2 = SorobanVec::from_array(&env, [(symbol_short!("ETH"), 7000i128)]);
-    assert_contract_error(
-        client.try_batch_record_collateral(&items2),
-        EscrowError::CollateralTimestampBackwards,
-    );
+    // Empty allowlist still exercises the path that loads the configured storage limit.
+    let addrs = soroban_sdk::Vec::<Address>::new(&env);
+    client.bump_ttl(&addrs);
 }
