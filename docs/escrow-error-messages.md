@@ -90,6 +90,8 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 60 | `CollateralAmountNotPositive` | `record_sme_collateral_commitment` | `amount <= 0` | Provide positive metadata amount | typed |
 | 61 | `CollateralAssetEmpty` | `record_sme_collateral_commitment` | asset symbol empty | Provide non-empty asset label | typed |
 | 62 | `CollateralTimestampBackwards` | `record_sme_collateral_commitment` | new timestamp `<` stored timestamp | Use monotonic timestamps | typed |
+| 63 | `CollateralBatchEmpty` | `batch_record_collateral` | `items.len() == 0` | Pass at least one item | typed |
+| 64 | `CollateralBatchTooLarge` | `batch_record_collateral` | `items.len() > MAX_COLLATERAL_BATCH` | Split into smaller batches | typed |
 | 70 | `InvestorBatchEmpty` | `set_investors_allowlisted` | `investors.len() == 0` | Pass at least one address | typed |
 | 71 | `InvestorBatchTooLarge` | `set_investors_allowlisted` | `investors.len() > MAX_INVESTOR_ALLOWLIST_BATCH` | Split into smaller batches | typed |
 | 72 | `TargetNotPositive` | `update_funding_target` | `new_target <= 0` | Set a positive target | typed |

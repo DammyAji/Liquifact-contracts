@@ -48,7 +48,7 @@ The current contract defines 38 event structs.
 | `BeneficiaryRotated` | `ben_rot` | `rotate_beneficiary` |
 | `BenChange` | `ben_chg` | `rotate_beneficiary` |
 | `CollateralClearedEvt` | — | `clear_sme_collateral_commitment` |
-| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment` |
+| `CollateralRecordedEvt` | `coll_rec` | `record_sme_collateral_commitment`, `batch_record_collateral` |
 | `ContractUpgraded` | `upgrade` | `upgrade` |
 | `DeprecatedTransferAdminUsed` | `depr_xfer` | `transfer_admin` |
 | `EscrowFunded` | `funded` | `fund`, `fund_with_commitment` |
