@@ -1140,10 +1140,9 @@ fn withdraw_double_withdraw_panics() {
     client.withdraw(); // must panic: WithdrawalNotFunded (status == 3 != 1)
 }
 
-/// `SmeWithdrew` event includes the correct recipient address.
+/// `SmeWithdrew` is emitted with the expected topic symbols and fee-bearing payload.
 #[test]
-#[ignore = "upstream latent: escrow API/test drift"]
-fn withdraw_event_includes_recipient() {
+fn withdraw_event_emits_expected_topics_and_fee_payload() {
     use crate::SmeWithdrew;
     use soroban_sdk::{symbol_short, testutils::Events};
 
@@ -1155,25 +1154,28 @@ fn withdraw_event_includes_recipient() {
 
     client.withdraw();
 
-    // Capture events before any getter call that would clear the buffer
+    // Capture the latest invocation's events immediately; the buffer is only retained for the
+    // most recent contract call, so this should observe the withdrawal event before any follow-up
+    // reads or state lookups mutate the event snapshot.
     let all_events = env.events().all().filter_by_contract(&escrow_id);
+    let event_list = all_events.events();
+    assert_eq!(event_list.len(), 1, "withdraw should emit exactly one event");
 
     let escrow = client.get_escrow();
-
+    let expected_fee = target * 800 / 10_000;
+    let expected_net = target - expected_fee;
     let expected_xdr = SmeWithdrew {
         name: symbol_short!("sme_wd"),
         invoice_id: escrow.invoice_id.clone(),
-        amount: target,
+        amount: expected_net,
         recipient: sme,
-        // Default escrow (no protocol_fee_bps): full funded_amount to the SME, zero fee.
-        fee: 0,
+        fee: expected_fee,
     }
     .to_xdr(&env, &escrow_id);
 
-    let all_events = env.events().all().filter_by_contract(&escrow_id);
-    let found = all_events.events().contains(&expected_xdr);
-    assert!(
-        found,
-        "SmeWithdrew event with correct recipient and amount must be emitted"
+    let emitted_event = event_list.last().unwrap().clone();
+    assert_eq!(
+        emitted_event, expected_xdr,
+        "SmeWithdrew must carry the expected topic symbols and fee payload"
     );
 }
