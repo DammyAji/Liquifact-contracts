@@ -1411,6 +1411,31 @@ pub struct AttestationDigestInfo {
     pub revoked: bool,
 }
 
+/// Read-only configuration snapshot for the attestation subsystem.
+///
+/// Returned by [`LiquifactEscrow::get_attestation_config`]. All fields reflect
+/// the current static constants plus the live runtime state. Returns sensible
+/// defaults (zero counts, `has_primary = false`) when called before `init`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttestationConfig {
+    /// Maximum number of entries the append log may hold.
+    /// Equals [`MAX_ATTESTATION_APPEND_ENTRIES`] (32).
+    pub max_append_entries: u32,
+    /// Maximum number of indices that can be revoked in a single batch call.
+    /// Equals [`MAX_ATTESTATION_REVOKE_BATCH`] (32).
+    pub max_revoke_batch: u32,
+    /// Maximum page size for [`LiquifactEscrow::get_revoked_attestation_digests`].
+    /// Equals [`MAX_ATTESTATION_READ_PAGE`] (20).
+    pub max_read_page: u32,
+    /// Number of entries currently in the append log (`0` before any append).
+    pub append_log_len: u32,
+    /// Free slots remaining before the append log hits `max_append_entries`.
+    pub append_log_remaining: u32,
+    /// `true` when [`DataKey::PrimaryAttestationHash`] is set.
+    pub has_primary_hash: bool,
+}
+
 #[contractevent]
 pub struct AllowlistEnabledChanged {
     #[topic]
@@ -2827,6 +2852,28 @@ impl LiquifactEscrow {
 
     pub fn get_attestation_append_log(env: Env) -> Vec<BytesN<32>> {
         Self::load_attestation_log(&env)
+    }
+
+    /// Pure read — no auth, no storage writes, safe for simulation.
+    ///
+    /// Returns an [`AttestationConfig`] snapshot combining the static capacity constants
+    /// with the current runtime state. Calling this before [`LiquifactEscrow::init`] is
+    /// valid and returns zero-count / `false` defaults for all runtime fields.
+    pub fn get_attestation_config(env: Env) -> AttestationConfig {
+        let log = Self::load_attestation_log(&env);
+        let append_log_len = log.len();
+        let has_primary_hash = env
+            .storage()
+            .instance()
+            .has(&DataKey::PrimaryAttestationHash);
+        AttestationConfig {
+            max_append_entries: MAX_ATTESTATION_APPEND_ENTRIES,
+            max_revoke_batch: MAX_ATTESTATION_REVOKE_BATCH,
+            max_read_page: MAX_ATTESTATION_READ_PAGE,
+            append_log_len,
+            append_log_remaining: MAX_ATTESTATION_APPEND_ENTRIES.saturating_sub(append_log_len),
+            has_primary_hash,
+        }
     }
 
     /// Returns the digest and revocation flag at `index`.
