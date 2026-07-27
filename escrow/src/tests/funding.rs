@@ -6505,10 +6505,7 @@ fn assert_preview_matches_actual(
     lock: u64,
 ) {
     let preview = client.preview_yield_tier(&amount, &lock);
-<<<<<<< HEAD
-=======
     let (preview_bps, preview_lock) = (preview.effective_yield_bps, preview.matched_lock_secs);
->>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
     let investor = Address::generate(env);
     sac_admin.mint(&investor, &amount);
     client.fund_with_commitment(&investor, &amount, &lock);
@@ -6595,17 +6592,11 @@ fn test_preview_matches_actual_zero_lock_with_tiers() {
     env.mock_all_auths();
     let (client, sac_admin) = setup_three_tier_escrow_with_sac(&env, "PV_ZERO", 1_000_000i128);
     let preview = client.preview_yield_tier(&1_000i128, &0u64);
-<<<<<<< HEAD
     assert_eq!(
         preview.effective_yield_bps, 500,
         "zero lock must return base yield"
     );
     assert_eq!(preview.matched_lock_secs, 0, "zero lock must return lock=0");
-=======
-    let (preview_bps, preview_lock) = (preview.effective_yield_bps, preview.matched_lock_secs);
-    assert_eq!(preview_bps, 500, "zero lock must return base yield");
-    assert_eq!(preview_lock, 0, "zero lock must return lock=0");
->>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
     assert_preview_matches_actual(&client, &env, &sac_admin, 1_000i128, 0u64);
 }
 
@@ -7748,7 +7739,6 @@ fn test_unfund_event_emitted() {
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
 
-
 // ─── get_funding_records paginated view tests (issue #790) ─────────────────────
 
 #[test]
@@ -7836,8 +7826,17 @@ fn test_get_funding_records_continuation() {
     assert_eq!(page3.get(0).unwrap().1, amounts[4]);
 
     // Verify all records are accounted for with no duplicates
-    let all_paginated = std::vec::Vec::from([page1, page2, page3].into_iter().flatten().collect::<Vec<_>>());
-    assert_eq!(all_paginated.len(), 5, "pagination should return all records exactly once");
+    let all_paginated = std::vec::Vec::from(
+        [page1, page2, page3]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        all_paginated.len(),
+        5,
+        "pagination should return all records exactly once"
+    );
 }
 
 #[test]
@@ -7953,7 +7952,11 @@ fn test_get_funding_records_multiple_contributions_per_investor() {
 
     // Should appear exactly once in the index with the cumulative contribution
     let records = client.get_funding_records(&0, &50);
-    assert_eq!(records.len(), 1, "investor should appear once even with multiple deposits");
+    assert_eq!(
+        records.len(),
+        1,
+        "investor should appear once even with multiple deposits"
+    );
 
     let record = records.get(0).unwrap();
     assert_eq!(record.0, inv);

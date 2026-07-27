@@ -2097,7 +2097,13 @@ fn test_is_settleable_created_never_funded() {
     assert!(!client.is_settleable(), "open escrow is not settleable");
 }
 
-fn setup_test() -> (Env, LiquifactEscrowClient<'static>, Address, Address, Address) {
+fn setup_test() -> (
+    Env,
+    LiquifactEscrowClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -2119,7 +2125,14 @@ fn test_settle_bounds_and_maturity() {
     let target_amount = 1_000_000;
     let maturity = 10_000;
 
-    client.init(&admin, &sme, &funding_token, &invoice_id, &target_amount, &maturity);
+    client.init(
+        &admin,
+        &sme,
+        &funding_token,
+        &invoice_id,
+        &target_amount,
+        &maturity,
+    );
 
     // Manually mark escrow as funded for unit testing
     env.as_contract(&client.address, || {

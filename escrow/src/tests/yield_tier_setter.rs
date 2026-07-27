@@ -1,7 +1,7 @@
+use super::super::tests::assert_contract_error;
 use super::super::{
     EscrowError, LiquifactEscrow, LiquifactEscrowClient, YieldTier, YieldTierTableUpdated,
 };
-use super::super::tests::assert_contract_error;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events},

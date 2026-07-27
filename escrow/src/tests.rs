@@ -19,9 +19,9 @@
 #[allow(unused_imports)]
 use super::{
     AllowlistEnabledChanged, AllowlistStateChanged, AttestationDigestAppended,
-    AttestationDigestRevoked, AttestationDigestUnrevoked, CollateralConfig,
-    CollateralRecordedEvt, ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError,
-    EscrowFunded, EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingTargetUpdated,
+    AttestationDigestRevoked, AttestationDigestUnrevoked, CollateralConfig, CollateralRecordedEvt,
+    ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError, EscrowFunded,
+    EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingTargetUpdated,
     InvestorAllowlistChanged, InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient,
     MaturityMaxHorizonUpdated, MaxUniqueInvestorsCapLowered, PrimaryAttestationBound,
     RegistryRefRebound, TreasuryDustSwept, YieldTier, YieldTierTableUpdated,
@@ -84,10 +84,10 @@ mod settlement;
 mod settlement_limit;
 mod yield_tier_overflow;
 
+mod allowlist_event_payloads;
 mod collateral_config_view;
 mod yield_tier_setter;
 mod yield_tier_struct;
-mod allowlist_event_payloads;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
