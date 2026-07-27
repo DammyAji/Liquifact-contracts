@@ -1,4 +1,8 @@
-use super::super::{CollateralConfig, CollateralCommitmentSnapshot, LiquifactEscrow, LiquifactEscrowClient};
+use super::super::{
+    CollateralConfig, CollateralCommitmentSnapshot, DataKey, EscrowError, LiquifactEscrow,
+    LiquifactEscrowClient,
+};
+use super::assert_contract_error;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
@@ -73,4 +77,42 @@ fn test_collateral_config_matches_individual_getters() {
         Some(c) => assert_eq!(config.sme_commitment, CollateralCommitmentSnapshot::Some(c)),
         None => assert_eq!(config.sme_commitment, CollateralCommitmentSnapshot::None),
     }
+}
+
+#[test]
+fn test_collateral_limit_accepts_i128_max_boundary_without_wraparound() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    init_escrow(&env, &client);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&DataKey::CollateralLimit, &i128::MAX);
+    });
+
+    let asset = soroban_sdk::Symbol::new(&env, "USDC");
+    let commitment = client.record_sme_collateral_commitment(&asset, &i128::MAX);
+
+    assert_eq!(commitment.amount, i128::MAX);
+    assert_eq!(client.get_collateral_limit(), i128::MAX);
+}
+
+#[test]
+fn test_collateral_limit_rejects_amount_above_i128_max_boundary_with_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    init_escrow(&env, &client);
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::CollateralLimit, &(i128::MAX - 1));
+    });
+
+    let asset = soroban_sdk::Symbol::new(&env, "USDC");
+    assert_contract_error(
+        client.try_record_sme_collateral_commitment(&asset, &i128::MAX),
+        EscrowError::CollateralLimitExceeded,
+    );
 }
