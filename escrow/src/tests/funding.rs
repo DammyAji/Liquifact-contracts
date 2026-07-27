@@ -4775,6 +4775,45 @@ fn test_remaining_capacity_never_negative_when_overfunded() {
     assert_eq!(client.get_escrow().status, 1, "escrow must be funded");
 }
 
+#[test]
+fn test_remaining_capacity_saturates_to_zero_for_extreme_overfund_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, sme) = (Address::generate(&env), Address::generate(&env));
+    let client = deploy(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPMAX1"),
+        &sme,
+        &1i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &i128::MAX);
+    client.fund(&investor, &i128::MAX);
+
+    assert_eq!(client.get_remaining_funding_capacity(), 0);
+    assert_eq!(client.get_escrow().funded_amount, i128::MAX);
+}
+
 /// Test that capacity recomputes correctly after update_funding_target raises
 
 /// the target while the escrow is still open.
@@ -6466,6 +6505,10 @@ fn assert_preview_matches_actual(
     lock: u64,
 ) {
     let preview = client.preview_yield_tier(&amount, &lock);
+<<<<<<< HEAD
+=======
+    let (preview_bps, preview_lock) = (preview.effective_yield_bps, preview.matched_lock_secs);
+>>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
     let investor = Address::generate(env);
     sac_admin.mint(&investor, &amount);
     client.fund_with_commitment(&investor, &amount, &lock);
@@ -6552,11 +6595,17 @@ fn test_preview_matches_actual_zero_lock_with_tiers() {
     env.mock_all_auths();
     let (client, sac_admin) = setup_three_tier_escrow_with_sac(&env, "PV_ZERO", 1_000_000i128);
     let preview = client.preview_yield_tier(&1_000i128, &0u64);
+<<<<<<< HEAD
     assert_eq!(
         preview.effective_yield_bps, 500,
         "zero lock must return base yield"
     );
     assert_eq!(preview.matched_lock_secs, 0, "zero lock must return lock=0");
+=======
+    let (preview_bps, preview_lock) = (preview.effective_yield_bps, preview.matched_lock_secs);
+    assert_eq!(preview_bps, 500, "zero lock must return base yield");
+    assert_eq!(preview_lock, 0, "zero lock must return lock=0");
+>>>>>>> dee6f54 (refactor(allowlist): return a typed struct)
     assert_preview_matches_actual(&client, &env, &sac_admin, 1_000i128, 0u64);
 }
 
