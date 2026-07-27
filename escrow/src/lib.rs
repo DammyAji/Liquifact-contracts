@@ -1947,6 +1947,37 @@ pub struct EscrowSummary {
     pub attestation_log_length: u32,
 }
 
+/// Read-only snapshot of all funding configuration values.
+///
+/// Returns every governance-set parameter that shapes [`LiquifactEscrow::fund`] /
+/// [`LiquifactEscrow::fund_with_commitment`] / [`LiquifactEscrow::fund_batch`] behavior.
+/// All fields carry sensible defaults so callers can invoke this view before
+/// [`LiquifactEscrow::init`] without a panic.
+#[contracttype]
+#[derive(Debug, PartialEq)]
+pub struct FundingConfig {
+    /// Current funding target; defaults to `0` before init.
+    pub funding_target: i128,
+    /// Base annualized yield in basis points; defaults to `0`.
+    pub yield_bps: i64,
+    /// Maturity ledger timestamp (0 = no maturity lock); defaults to `0`.
+    pub maturity: u64,
+    /// Minimum per-call contribution floor; defaults to `0` (no floor).
+    pub min_contribution_floor: i128,
+    /// Cap on distinct investor addresses; `None` = unlimited.
+    pub max_unique_investors_cap: Option<u32>,
+    /// Per-investor cap on total principal; `None` = unlimited.
+    pub max_per_investor_cap: Option<i128>,
+    /// Optional funding deadline timestamp; `None` = no deadline.
+    pub funding_deadline: Option<u64>,
+    /// Immutable protocol fee in basis points; defaults to `0`.
+    pub protocol_fee_bps: i64,
+    /// Yield-tier ladder; empty `Vec` = no tiering.
+    pub yield_tiers: Vec<YieldTier>,
+    /// Whether the investor allowlist gate is active; defaults to `false`.
+    pub allowlist_active: bool,
+}
+
 // --- Events ---
 
 #[contractevent]
@@ -2751,6 +2782,67 @@ impl LiquifactEscrow {
             sme_collateral_commitment,
             has_primary_attestation: primary_attestation_hash.is_some(),
             attestation_log_length: attestation_append_log.len(),
+        }
+    }
+
+    /// Returns a snapshot of every governance-set funding parameter.
+    ///
+    /// Pure read-only view: no auth, no storage writes. All fields fall back to
+    /// sensible defaults when the escrow has not yet been initialised, so callers
+    /// can invoke this view at any time without a panic.
+    pub fn get_funding_config(env: Env) -> FundingConfig {
+        let escrow: Option<InvoiceEscrow> = env.storage().instance().get(&DataKey::Escrow);
+
+        let (funding_target, yield_bps, maturity) = match &escrow {
+            Some(e) => (e.funding_target, e.yield_bps, e.maturity),
+            None => (0i128, 0i64, 0u64),
+        };
+
+        let min_contribution_floor: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinContributionFloor)
+            .unwrap_or(0);
+
+        let max_unique_investors_cap: Option<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxUniqueInvestorsCap);
+
+        let max_per_investor_cap: Option<i128> =
+            env.storage().instance().get(&DataKey::MaxPerInvestorCap);
+
+        let funding_deadline: Option<u64> = env.storage().instance().get(&DataKey::FundingDeadline);
+
+        let protocol_fee_bps: i64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+
+        let yield_tiers: Vec<YieldTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::YieldTierTable)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let allowlist_active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistActive)
+            .unwrap_or(false);
+
+        FundingConfig {
+            funding_target,
+            yield_bps,
+            maturity,
+            min_contribution_floor,
+            max_unique_investors_cap,
+            max_per_investor_cap,
+            funding_deadline,
+            protocol_fee_bps,
+            yield_tiers,
+            allowlist_active,
         }
     }
 
