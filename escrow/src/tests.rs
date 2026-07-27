@@ -68,6 +68,8 @@ mod cap_validation;
 mod external_calls;
 mod external_calls_mocked;
 mod funding;
+mod funding_config;
+mod funding_events;
 mod init;
 mod integration;
 mod integration_status_guards;
