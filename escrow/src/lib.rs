@@ -815,6 +815,19 @@ pub struct YieldTierPreview {
     pub matched_lock_secs: u64,
 }
 
+/// Preview of the escrow protocol fee split returned by [`LiquifactEscrow::fees`].
+///
+/// Replaces the anonymous `(i128, i128)` tuple so callers can access the treasury
+/// fee and the SME net amount by name.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fees {
+    /// Computed protocol fee amount routed to the treasury.
+    pub fee: i128,
+    /// Net amount routed to the SME after fees.
+    pub net: i128,
+}
+
 /// Captured exactly once at the first ledger transition to **funded** so settlement and claims can
 /// use a stable total principal and target. If the threshold-crossing deposit overshoots
 /// [`InvoiceEscrow::funding_target`], [`FundingCloseSnapshot::total_principal`] records the full
@@ -2694,6 +2707,34 @@ impl LiquifactEscrow {
             .instance()
             .get(&DataKey::ProtocolFeeBps)
             .unwrap_or(0)
+    }
+
+    /// Preview the current protocol fee split for the escrow's funded amount.
+    ///
+    /// Returns `0` for both `fee` and `net` when the escrow is uninitialized or
+    /// when the funded amount is zero. Uses the exact same checked arithmetic as
+    /// [`LiquifactEscrow::withdraw`] to preserve fee-net consistency.
+    pub fn fees(env: Env) -> Fees {
+        let escrow: Option<InvoiceEscrow> = env.storage().instance().get(&DataKey::Escrow);
+        let amount = escrow.as_ref().map(|escrow| escrow.funded_amount).unwrap_or(0);
+        if amount == 0 {
+            return Fees { fee: 0, net: 0 };
+        }
+
+        let fee_bps: i64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+        let fee: i128 = amount
+            .checked_mul(fee_bps as i128)
+            .and_then(|scaled| scaled.checked_div(10_000))
+            .unwrap_or_else(|| fail(&env, EscrowError::WithdrawFeeArithmeticOverflow));
+        let net: i128 = amount
+            .checked_sub(fee)
+            .unwrap_or_else(|| fail(&env, EscrowError::WithdrawNetArithmeticUnderflow));
+
+        Fees { fee, net }
     }
 
     /// Optional cap on **distinct** investor addresses (`prev == 0` at fund time); [`None`] if unlimited.

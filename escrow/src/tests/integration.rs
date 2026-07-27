@@ -1179,3 +1179,33 @@ fn withdraw_event_emits_expected_topics_and_fee_payload() {
         "SmeWithdrew must carry the expected topic symbols and fee payload"
     );
 }
+
+/// `fees` returns zeros when the escrow is not yet initialized.
+#[test]
+fn fees_returns_zero_for_uninitialized_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = crate::tests::deploy(&env);
+    let fees = client.fees();
+
+    assert_eq!(fees.fee, 0);
+    assert_eq!(fees.net, 0);
+}
+
+/// `fees` computes the contract's protocol fee and SME net correctly for funded escrows.
+#[test]
+fn fees_returns_expected_fee_and_net_for_funded_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let target = 5_000_000i128;
+    let (client, _escrow_id, _token, _sme) = setup_withdraw_with_token(&env, target, "WD_FEE001");
+
+    let fees = client.fees();
+    let expected_fee = target * 800 / 10_000;
+    let expected_net = target - expected_fee;
+
+    assert_eq!(fees.fee, expected_fee);
+    assert_eq!(fees.net, expected_net);
+}
