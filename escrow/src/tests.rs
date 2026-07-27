@@ -81,6 +81,7 @@ mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod settlement_limit;
 mod yield_tier_overflow;
 
 mod collateral_config_view;
