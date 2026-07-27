@@ -77,6 +77,7 @@ mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod settlement_limit;
 mod yield_tier_overflow;
 
 /// Registers a new escrow contract instance and returns its contract id.

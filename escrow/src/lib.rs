@@ -99,6 +99,10 @@ pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
+pub const DEFAULT_SETTLEMENT_LIMIT: u32 = 50;
+pub const MIN_SETTLEMENT_LIMIT: u32 = 1;
+pub const MAX_SETTLEMENT_LIMIT: u32 = 100;
+
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
@@ -446,6 +450,9 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::set_settlement_limit`] rejected a limit outside bounds.
+    SettlementLimitOutOfRange = 300,
 }
 
 #[inline(always)]
@@ -746,6 +753,7 @@ pub enum DataKey {
     ProtocolFeeBps,
     /// Admin-configured collateral limit.
     CollateralLimit,
+    SettlementLimit,
 }
 
 // --- Data types ---
@@ -6623,6 +6631,24 @@ impl LiquifactEscrow {
 
     pub fn get_escrow(env: Env) -> Option<InvoiceEscrow> {
         get_escrow(&env)
+    }
+
+    pub fn get_settlement_limit(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SettlementLimit)
+            .unwrap_or(DEFAULT_SETTLEMENT_LIMIT)
+    }
+
+    pub fn set_settlement_limit(env: Env, limit: u32) -> Result<(), EscrowError> {
+        let _escrow = Self::load_escrow_require_admin(&env);
+        
+        if limit < MIN_SETTLEMENT_LIMIT || limit > MAX_SETTLEMENT_LIMIT {
+            return Err(EscrowError::SettlementLimitOutOfRange);
+        }
+        
+        env.storage().instance().set(&DataKey::SettlementLimit, &limit);
+        Ok(())
     }
 
     pub fn get_version(env: Env) -> Option<u32> {
