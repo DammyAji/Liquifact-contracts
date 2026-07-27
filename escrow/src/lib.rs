@@ -1782,11 +1782,15 @@ impl LiquifactEscrow {
             env.storage().instance().set(&DataKey::RegistryRef, reg);
         }
 
-        if let Some(tiers) = &yield_tiers {
+        let yield_tier_count: Option<u32> = if let Some(tiers) = &yield_tiers {
+            let n = tiers.len();
             env.storage()
                 .instance()
                 .set(&DataKey::YieldTierTable, tiers);
-        }
+            Some(n)
+        } else {
+            None
+        };
         if let Some(mc) = min_contribution {
             ensure(&env, mc > 0, EscrowError::MinContributionNotPositive);
             ensure(
@@ -1876,6 +1880,16 @@ impl LiquifactEscrow {
             has_maturity_lock,
         }
         .publish(&env);
+
+        // Emit YieldTierTableUpdated when yield tiers were configured at init.
+        if let Some(tier_count) = yield_tier_count {
+            YieldTierTableUpdated {
+                name: symbol_short!("yt_upd"),
+                invoice_id: escrow.invoice_id.clone(),
+                tier_count,
+            }
+            .publish(&env);
+        }
 
         escrow
     }
