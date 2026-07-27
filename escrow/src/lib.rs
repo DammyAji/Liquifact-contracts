@@ -454,6 +454,8 @@ pub enum EscrowError {
     /// Reject at deposit time so a settled escrow cannot hold an investor's payout
     /// claim hostage beyond the point where principal is due.
     CommitmentLockExceedsMaturity = 111,
+    /// [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] amount exceeds [`MAX_INVOICE_AMOUNT`].
+    FundingAmountExceedsMax = 112,
 
     /// [`LiquifactEscrow::settle`] blocked while a legal hold is active.
     LegalHoldBlocksSettlement = 120,
@@ -3959,6 +3961,11 @@ impl LiquifactEscrow {
         for i in 0..n {
             let (_, amount) = entries.get(i).unwrap();
             ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
+            ensure(
+                &env,
+                amount <= MAX_INVOICE_AMOUNT,
+                EscrowError::FundingAmountExceedsMax,
+            );
             if floor > 0 {
                 ensure(
                     &env,
@@ -4011,6 +4018,11 @@ impl LiquifactEscrow {
         investor.require_auth();
 
         ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
+        ensure(
+            &env,
+            amount <= MAX_INVOICE_AMOUNT,
+            EscrowError::FundingAmountExceedsMax,
+        );
 
         let floor: i128 = env
             .storage()

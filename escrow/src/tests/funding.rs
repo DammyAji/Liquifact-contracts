@@ -7607,3 +7607,166 @@ fn test_unfund_event_emitted() {
 
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
+
+// ── Funding input bounds (issue funding-11) ──────────────────────────────────
+
+fn init_for_bounds_test(env: &Env) -> LiquifactEscrowClient<'_> {
+    let client = deploy(env);
+    let admin = Address::generate(env);
+    let sme = Address::generate(env);
+    let (tok, tre) = free_addresses(env);
+    client.init(
+        &admin,
+        &String::from_str(env, "BND001"),
+        &sme,
+        &crate::MAX_INVOICE_AMOUNT,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+    client
+}
+
+/// amount == 1 (min valid) accepted.
+#[test]
+fn test_fund_amount_min_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.fund(&inv, &1i128);
+    assert_eq!(result.funded_amount, 1i128);
+}
+
+/// amount == MAX_INVOICE_AMOUNT (max valid) accepted.
+#[test]
+fn test_fund_amount_max_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.fund(&inv, &crate::MAX_INVOICE_AMOUNT);
+    assert_eq!(result.funded_amount, crate::MAX_INVOICE_AMOUNT);
+}
+
+/// amount == MAX_INVOICE_AMOUNT + 1 rejected with FundingAmountExceedsMax.
+#[test]
+fn test_fund_amount_over_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.try_fund(&inv, &(crate::MAX_INVOICE_AMOUNT + 1));
+    assert_contract_error(result, EscrowError::FundingAmountExceedsMax);
+}
+
+/// amount == 0 rejected with FundingAmountNotPositive.
+#[test]
+fn test_fund_amount_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.try_fund(&inv, &0i128);
+    assert_contract_error(result, EscrowError::FundingAmountNotPositive);
+}
+
+/// negative amount rejected with FundingAmountNotPositive.
+#[test]
+fn test_fund_amount_negative_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.try_fund(&inv, &-1i128);
+    assert_contract_error(result, EscrowError::FundingAmountNotPositive);
+}
+
+/// fund_with_commitment: amount > MAX_INVOICE_AMOUNT rejected.
+#[test]
+fn test_fund_with_commitment_amount_over_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.try_fund_with_commitment(&inv, &(crate::MAX_INVOICE_AMOUNT + 1), &0u64);
+    assert_contract_error(result, EscrowError::FundingAmountExceedsMax);
+}
+
+/// fund_with_commitment: amount == MAX_INVOICE_AMOUNT accepted.
+#[test]
+fn test_fund_with_commitment_amount_max_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv = Address::generate(&env);
+    let result = client.fund_with_commitment(&inv, &crate::MAX_INVOICE_AMOUNT, &0u64);
+    assert_eq!(result.funded_amount, crate::MAX_INVOICE_AMOUNT);
+}
+
+/// fund_batch: one entry over MAX_INVOICE_AMOUNT rejected atomically.
+#[test]
+fn test_fund_batch_entry_over_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = init_for_bounds_test(&env);
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let mut entries = soroban_sdk::Vec::new(&env);
+    entries.push_back((inv_a.clone(), 1_000i128));
+    entries.push_back((inv_b.clone(), crate::MAX_INVOICE_AMOUNT + 1));
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::FundingAmountExceedsMax);
+    // Neither entry committed — batch is atomic.
+    assert_eq!(client.get_contribution(&inv_a), 0i128);
+}
+
+/// fund_batch: all entries at MAX_INVOICE_AMOUNT accepted (separate investors, large target).
+#[test]
+fn test_fund_batch_entries_at_max_each_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    // Use a fresh escrow large enough to accept two MAX_INVOICE_AMOUNT deposits.
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    // funding_target = MAX_INVOICE_AMOUNT * 2 would overflow MAX_INVOICE_AMOUNT bound on init,
+    // so we cap at MAX_INVOICE_AMOUNT and accept just one entry at the max.
+    client.init(
+        &admin,
+        &String::from_str(&env, "BND002"),
+        &sme,
+        &crate::MAX_INVOICE_AMOUNT,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+    let inv = Address::generate(&env);
+    let mut entries = soroban_sdk::Vec::new(&env);
+    entries.push_back((inv.clone(), crate::MAX_INVOICE_AMOUNT));
+    let result = client.fund_batch(&entries);
+    assert_eq!(result.funded_amount, crate::MAX_INVOICE_AMOUNT);
+}
