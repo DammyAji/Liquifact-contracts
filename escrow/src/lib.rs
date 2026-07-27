@@ -2088,6 +2088,17 @@ pub struct EscrowSummary {
     pub attestation_log_length: u32,
 }
 
+/// Read-only snapshot of yield-tier configuration.
+#[contracttype]
+#[derive(Debug, PartialEq, Clone)]
+pub struct YieldTierConfig {
+    /// Base annualized yield in basis points; defaults to `0` before init.
+    pub base_yield_bps: i64,
+    /// Yield-tier ladder; empty `Vec` = no tiering.
+    pub tiers: Vec<YieldTier>,
+}
+
+
 /// Read-only snapshot of all funding configuration values.
 ///
 /// Returns every governance-set parameter that shapes [`LiquifactEscrow::fund`] /
@@ -3020,6 +3031,27 @@ impl LiquifactEscrow {
             sme_collateral_commitment,
             has_primary_attestation: primary_attestation_hash.is_some(),
             attestation_log_length: attestation_append_log.len(),
+        }
+    }
+
+    /// Returns a read-only snapshot of the yield-tier configuration.
+    /// Returns sensible defaults (`0` base yield and empty tiers) before the escrow is initialized.
+    pub fn get_yield_tier_config(env: Env) -> YieldTierConfig {
+        let escrow: Option<InvoiceEscrow> = env.storage().instance().get(&DataKey::Escrow);
+        let base_yield_bps = match escrow {
+            Some(e) => e.yield_bps,
+            None => 0i64,
+        };
+
+        let tiers: Vec<YieldTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::YieldTierTable)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        YieldTierConfig {
+            base_yield_bps,
+            tiers,
         }
     }
 

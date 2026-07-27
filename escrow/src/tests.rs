@@ -87,6 +87,7 @@ mod yield_tier_overflow;
 mod collateral_config_view;
 mod yield_tier_setter;
 mod yield_tier_struct;
+mod yield_tier_config;
 mod allowlist_event_payloads;
 
 /// Registers a new escrow contract instance and returns its contract id.
