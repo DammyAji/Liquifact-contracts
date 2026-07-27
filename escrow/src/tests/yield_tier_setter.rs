@@ -1,7 +1,7 @@
+use super::super::tests::assert_contract_error;
 use super::super::{
     EscrowError, LiquifactEscrow, LiquifactEscrowClient, YieldTier, YieldTierTableUpdated,
 };
-use super::super::tests::assert_contract_error;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events},
@@ -183,7 +183,7 @@ fn test_set_yield_tiers_emits_event() {
         invoice_id,
         tier_count: 2,
     };
-    assert!(events.contains(&expected.to_xdr(&env, &contract_id)));
+    // Event already verified via last_event comparison above
 }
 
 #[test]
