@@ -99,6 +99,9 @@ pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
+/// Upper bound on collateral records read page size.
+pub const MAX_COLLATERAL_READ_PAGE: u32 = 50;
+
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
@@ -1802,6 +1805,9 @@ pub enum DataKey {
     /// Optional SME collateral commitment metadata (record-only — not an on-chain asset lock).
     /// Absent when no commitment has been recorded. Replaceable by the SME.
     SmeCollateralPledge,
+    /// Append-only log of SME collateral commitment metadata (record-only).
+    /// Bounded by the pagination ceiling logic; holds historical collateral records.
+    CollateralRecords,
     /// Set to `true` when an investor has exercised a claim after settlement.
     /// **Persistent** storage. Absent ⇒ `false`. Written once; a second claim returns without re-emitting.
     InvestorClaimed(Address),
@@ -6101,6 +6107,16 @@ impl LiquifactEscrow {
             .instance()
             .set(&DataKey::SmeCollateralPledge, &commitment);
 
+        let mut log: Vec<SmeCollateralCommitment> = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralRecords)
+            .unwrap_or_else(|| Vec::new(&env));
+        log.push_back(commitment.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::CollateralRecords, &log);
+
         CollateralRecordedEvt {
             name: symbol_short!("coll_rec"),
             invoice_id: escrow.invoice_id.clone(),
@@ -6110,6 +6126,36 @@ impl LiquifactEscrow {
         .publish(&env);
 
         commitment
+    }
+
+    /// Returns a paginated list of all collateral commitments recorded.
+    ///
+    /// # Arguments
+    /// * `start` - The starting index (0-based) of the pagination.
+    /// * `limit` - The maximum number of records to return (capped at [`MAX_COLLATERAL_READ_PAGE`]).
+    ///
+    /// # Returns
+    /// A `Vec<SmeCollateralCommitment>` containing the records within the requested page.
+    pub fn get_collateral_records(env: Env, start: u32, limit: u32) -> Vec<SmeCollateralCommitment> {
+        let log: Vec<SmeCollateralCommitment> = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralRecords)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = log.len();
+        if start >= len || limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let actual_limit = limit.min(MAX_COLLATERAL_READ_PAGE);
+        let end = (start + actual_limit).min(len);
+
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            result.push_back(log.get(i).unwrap());
+        }
+        result
     }
 
     /// Set or clear compliance hold. Only the **current** [`InvoiceEscrow::admin`] may call.
