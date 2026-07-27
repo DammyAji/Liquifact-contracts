@@ -26,6 +26,10 @@ pub const MAX_ATTESTATION_APPEND_ENTRIES: u32 = 32;
 /// Maximum number of indices that can be revoked in a single batch call.
 pub const MAX_ATTESTATION_REVOKE_BATCH: u32 = 32;
 
+/// Maximum number of digests that can be appended in a single batch call via
+/// [`LiquifactEscrow::append_attestation_digests`].
+pub const MAX_ATTESTATION_APPEND_BATCH: u32 = 32;
+
 /// Default maximum maturity horizon in seconds (~5 years) when no explicit horizon is configured.
 pub const DEFAULT_MATURITY_MAX_HORIZON_SECS: u64 = 157_680_000; // ~5 years (365.25 * 24 * 3600 * 5)
 
@@ -213,6 +217,12 @@ pub enum EscrowError {
     AttestationBatchTooLarge = 55,
     /// [`LiquifactEscrow::unrevoke_attestation_digest`] called on an index that is not revoked.
     AttestationNotRevoked = 56,
+
+    /// [`LiquifactEscrow::append_attestation_digests`] received an empty digests list.
+    AttestationAppendBatchEmpty = 57,
+
+    /// [`LiquifactEscrow::append_attestation_digests`] exceeded [`MAX_ATTESTATION_APPEND_BATCH`].
+    AttestationAppendBatchTooLarge = 58,
 
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a non-positive amount.
     CollateralAmountNotPositive = 60,
@@ -2854,25 +2864,87 @@ impl LiquifactEscrow {
         Self::load_attestation_log(&env)
     }
 
-    /// Pure read — no auth, no storage writes, safe for simulation.
+    /// Atomically append multiple digests to the bounded on-chain attestation log in a single
+    /// call, saving per-call fees for operators that need to anchor several document hashes at
+    /// the same ledger.
     ///
-    /// Returns an [`AttestationConfig`] snapshot combining the static capacity constants
-    /// with the current runtime state. Calling this before [`LiquifactEscrow::init`] is
-    /// valid and returns zero-count / `false` defaults for all runtime fields.
-    pub fn get_attestation_config(env: Env) -> AttestationConfig {
-        let log = Self::load_attestation_log(&env);
-        let append_log_len = log.len();
-        let has_primary_hash = env
-            .storage()
+    /// Each digest is appended in order, identical to repeated
+    /// [`LiquifactEscrow::append_attestation_digest`] calls. The function is **all-or-nothing**:
+    /// if any validation fails, no state is mutated and no events are emitted.
+    ///
+    /// # Authorization
+    /// Requires `InvoiceEscrow::admin` auth.
+    ///
+    /// # Batch bounds
+    /// - `digests` must be non-empty (panics with [`EscrowError::AttestationAppendBatchEmpty`]).
+    /// - `digests.len()` must not exceed [`MAX_ATTESTATION_APPEND_BATCH`] (panics with
+    ///   [`EscrowError::AttestationAppendBatchTooLarge`]).
+    ///
+    /// # Capacity check
+    /// The entire batch is rejected with [`EscrowError::AttestationAppendLogCapacityReached`] when
+    /// `current_log_len + digests.len() > MAX_ATTESTATION_APPEND_ENTRIES`. This pre-flight check
+    /// runs before any mutation, guaranteeing atomicity — callers never observe a partial append.
+    ///
+    /// # Duplicate policy
+    /// Duplicate digests within the batch are **not** pre-deduplicated. The log is an ordered audit
+    /// trail, not a set (see single-entry [`LiquifactEscrow::append_attestation_digest`]).
+    ///
+    /// # Events
+    /// One [`AttestationDigestAppended`] event per newly appended digest, preserving the same event
+    /// shape as the single-entry entrypoint. Indices are assigned sequentially starting from
+    /// `log.len()` at call time.
+    ///
+    /// # Errors
+    /// | Condition | Error code | `EscrowError` variant |
+    /// |---|---|---|
+    /// | `digests.len() == 0` | 57 | `AttestationAppendBatchEmpty` |
+    /// | `digests.len() > MAX_ATTESTATION_APPEND_BATCH` | 58 | `AttestationAppendBatchTooLarge` |
+    /// | `current_log_len + digests.len() > MAX_ATTESTATION_APPEND_ENTRIES` | 51 | `AttestationAppendLogCapacityReached` |
+    pub fn append_attestation_digests(env: Env, digests: Vec<BytesN<32>>) {
+        let n = digests.len();
+
+        // Batch-size guards (surfaced before auth, consistent with revoke_attestation_digests).
+        ensure(&env, n > 0, EscrowError::AttestationAppendBatchEmpty);
+        ensure(
+            &env,
+            n <= MAX_ATTESTATION_APPEND_BATCH,
+            EscrowError::AttestationAppendBatchTooLarge,
+        );
+
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        let mut log: Vec<BytesN<32>> = Self::load_attestation_log(&env);
+
+        // Pre-flight capacity check: reject the whole batch atomically if it would overflow.
+        ensure(
+            &env,
+            log.len() + n <= MAX_ATTESTATION_APPEND_ENTRIES,
+            EscrowError::AttestationAppendLogCapacityReached,
+        );
+
+        // Append all digests.
+        let base_idx = log.len();
+        for i in 0..n {
+            let d = digests.get(i).unwrap();
+            log.push_back(d.clone());
+        }
+
+        // Single storage write — atomicity guaranteed by Soroban's transactional execution.
+        env.storage()
             .instance()
-            .has(&DataKey::PrimaryAttestationHash);
-        AttestationConfig {
-            max_append_entries: MAX_ATTESTATION_APPEND_ENTRIES,
-            max_revoke_batch: MAX_ATTESTATION_REVOKE_BATCH,
-            max_read_page: MAX_ATTESTATION_READ_PAGE,
-            append_log_len,
-            append_log_remaining: MAX_ATTESTATION_APPEND_ENTRIES.saturating_sub(append_log_len),
-            has_primary_hash,
+            .set(&DataKey::AttestationAppendLog, &log);
+
+        // Emit one event per entry after the write succeeds.
+        for i in 0..n {
+            let idx = base_idx + i;
+            let d = digests.get(i).unwrap();
+            AttestationDigestAppended {
+                name: symbol_short!("att_app"),
+                invoice_id: escrow.invoice_id.clone(),
+                index: idx,
+                digest: d,
+            }
+            .publish(&env);
         }
     }
 
@@ -2890,6 +2962,34 @@ impl LiquifactEscrow {
             .get(&DataKey::AttestationRevoked(index))
             .unwrap_or(false);
         Some(AttestationDigestInfo { digest, revoked })
+    }
+
+    // --- Collateral storage key helpers ---
+    //
+    // All reads and writes to `DataKey::SmeCollateralPledge` go through these three
+    // helpers so the key is referenced in exactly one place. If the key ever needs to
+    // be renamed or moved to a different storage tier, only these three functions change.
+
+    /// Read the SME collateral pledge from instance storage.
+    /// Returns `None` when no commitment has been recorded.
+    fn collateral_pledge_get(env: &Env) -> Option<SmeCollateralCommitment> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SmeCollateralPledge)
+    }
+
+    /// Persist a new (or replacement) SME collateral commitment to instance storage.
+    fn collateral_pledge_set(env: &Env, commitment: &SmeCollateralCommitment) {
+        env.storage()
+            .instance()
+            .set(&DataKey::SmeCollateralPledge, commitment);
+    }
+
+    /// Remove the SME collateral pledge entry from instance storage.
+    fn collateral_pledge_remove(env: &Env) {
+        env.storage()
+            .instance()
+            .remove(&DataKey::SmeCollateralPledge);
     }
 
     // --- Persistent per-investor storage helpers ---
@@ -3086,7 +3186,7 @@ impl LiquifactEscrow {
 
     /// Retrieve the currently recorded SME collateral commitment metadata from storage.
     pub fn get_sme_collateral_commitment(env: Env) -> Option<SmeCollateralCommitment> {
-        env.storage().instance().get(&DataKey::SmeCollateralPledge)
+        Self::collateral_pledge_get(&env)
     }
 
     /// Retrieve the admin-configured collateral limit.
@@ -3106,17 +3206,13 @@ impl LiquifactEscrow {
     /// 2. `require_auth` on the SME address (via `load_escrow_require_sme`).
     /// 3. Remove storage entry and emit [`CollateralClearedEvt`].
     pub fn clear_sme_collateral_commitment(env: Env) {
-        let commitment: SmeCollateralCommitment = env
-            .storage()
-            .instance()
-            .get(&DataKey::SmeCollateralPledge)
-            .unwrap_or_else(|| fail(&env, EscrowError::NoCollateralToClear));
+        let commitment: SmeCollateralCommitment =
+            Self::collateral_pledge_get(&env)
+                .unwrap_or_else(|| fail(&env, EscrowError::NoCollateralToClear));
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage()
-            .instance()
-            .remove(&DataKey::SmeCollateralPledge);
+        Self::collateral_pledge_remove(&env);
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
@@ -3407,8 +3503,7 @@ impl LiquifactEscrow {
         let escrow = Self::load_escrow_require_sme(&env);
 
         let now = env.ledger().timestamp();
-        let prior: Option<SmeCollateralCommitment> =
-            env.storage().instance().get(&DataKey::SmeCollateralPledge);
+        let prior: Option<SmeCollateralCommitment> = Self::collateral_pledge_get(&env);
         let prior_amount = prior.as_ref().map(|c| c.amount).unwrap_or(0);
 
         if let Some(ref existing) = prior {
@@ -3424,9 +3519,7 @@ impl LiquifactEscrow {
             amount,
             recorded_at: now,
         };
-        env.storage()
-            .instance()
-            .set(&DataKey::SmeCollateralPledge, &commitment);
+        Self::collateral_pledge_set(&env, &commitment);
 
         CollateralRecordedEvt {
             name: symbol_short!("coll_rec"),
