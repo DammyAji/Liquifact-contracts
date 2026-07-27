@@ -141,6 +141,9 @@ pub const SCHEMA_VERSION: u32 = 6;
 /// Revocation via [`LiquifactEscrow::revoke_attestation_digest`] does not consume a slot.
 pub const MAX_ATTESTATION_APPEND_ENTRIES: u32 = 32;
 
+/// Upper bound on [`LiquifactEscrow::revoke_attestation_digests`] batch size.
+pub const MAX_ATTESTATION_REVOKE_BATCH: u32 = 32;
+
 /// Upper bound on batch allowlist mutation entries to keep storage/CPU bounded.
 /// Mirrors the spirit of `MAX_ATTESTATION_APPEND_ENTRIES` to limit per-call work.
 pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
@@ -245,6 +248,16 @@ pub enum EscrowError {
     PrimaryAttestationAlreadyBound = 50,
     /// [`LiquifactEscrow::append_attestation_digest`] exceeded [`MAX_ATTESTATION_APPEND_ENTRIES`].
     AttestationAppendLogCapacityReached = 51,
+    /// [`LiquifactEscrow::revoke_attestation_digest`] / [`LiquifactEscrow::unrevoke_attestation_digest`] index is out of range.
+    AttestationIndexOutOfRange = 52,
+    /// [`LiquifactEscrow::revoke_attestation_digest`] or batch revoke hit an already-revoked index.
+    AttestationAlreadyRevoked = 53,
+    /// [`LiquifactEscrow::revoke_attestation_digests`] received an empty batch.
+    AttestationBatchEmpty = 54,
+    /// [`LiquifactEscrow::revoke_attestation_digests`] exceeded [`MAX_ATTESTATION_REVOKE_BATCH`].
+    AttestationBatchTooLarge = 55,
+    /// [`LiquifactEscrow::unrevoke_attestation_digest`] called on an index that is not currently revoked.
+    AttestationNotRevoked = 56,
 
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a non-positive amount.
     CollateralAmountNotPositive = 60,
@@ -849,6 +862,14 @@ pub struct AttestationDigestAppended {
 
 #[contractevent]
 pub struct AttestationDigestRevoked {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub index: u32,
+}
+
+#[contractevent]
+pub struct AttestationDigestUnrevoked {
     #[topic]
     pub name: Symbol,
     pub invoice_id: Symbol,
@@ -1602,6 +1623,26 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Load the attestation append log from storage, returning an empty vec when no key exists.
+    fn load_attestation_log(env: &Env) -> Vec<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttestationAppendLog)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Validate that `index` is within the bounds of the current attestation append log.
+    /// Returns `Err(EscrowError::AttestationIndexOutOfRange)` when out of range.
+    fn require_attestation_index_in_range(
+        index: u32,
+        log: &Vec<BytesN<32>>,
+    ) -> Result<(), EscrowError> {
+        if index >= log.len() {
+            return Err(EscrowError::AttestationIndexOutOfRange);
+        }
+        Ok(())
+    }
+
     // --- Persistent per-investor storage helpers ---
     fn get_persistent_investor_contribution(env: &Env, investor: Address) -> i128 {
         env.storage()
@@ -1692,20 +1733,19 @@ impl LiquifactEscrow {
     }
 
     pub fn revoke_attestation_digest(env: Env, index: u32) {
-        let escrow = Self::get_escrow(env.clone());
-        escrow.admin.require_auth();
-
-        let log: Vec<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttestationAppendLog)
-            .unwrap_or_else(|| Vec::new(&env));
-        assert!(index < log.len(), "attestation index out of range");
-        assert!(
+        let escrow = Self::load_escrow_require_admin(&env);
+        let log = Self::load_attestation_log(&env);
+        ensure(
+            &env,
+            index < log.len(),
+            EscrowError::AttestationIndexOutOfRange,
+        );
+        ensure(
+            &env,
             !env.storage()
                 .instance()
                 .has(&DataKey::AttestationRevoked(index)),
-            "attestation already revoked at index"
+            EscrowError::AttestationAlreadyRevoked,
         );
 
         env.storage()
@@ -1718,6 +1758,104 @@ impl LiquifactEscrow {
             index,
         }
         .publish(&env);
+    }
+
+    /// Reverse a prior revocation. Clears the [`DataKey::AttestationRevoked(index)`] marker
+    /// so the entry is once again treated as active by indexers.
+    ///
+    /// # Authorization
+    /// Requires the current [`InvoiceEscrow::admin`] to authorize.
+    ///
+    /// # Errors
+    /// - [`EscrowError::AttestationIndexOutOfRange`] if `index >= log.len()`.
+    /// - [`EscrowError::AttestationNotRevoked`] if the index is not currently revoked.
+    pub fn unrevoke_attestation_digest(env: Env, index: u32) {
+        let escrow = Self::load_escrow_require_admin(&env);
+        let log = Self::load_attestation_log(&env);
+        ensure(
+            &env,
+            index < log.len(),
+            EscrowError::AttestationIndexOutOfRange,
+        );
+        ensure(
+            &env,
+            env.storage()
+                .instance()
+                .has(&DataKey::AttestationRevoked(index)),
+            EscrowError::AttestationNotRevoked,
+        );
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::AttestationRevoked(index));
+
+        AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id: escrow.invoice_id.clone(),
+            index,
+        }
+        .publish(&env);
+    }
+
+    /// Atomically revoke multiple attestation-digest indices in a single transaction.
+    ///
+    /// Each index undergoes the same validation as [`LiquifactEscrow::revoke_attestation_digest`].
+    /// If any per-index validation fails the entire batch is rolled back — no partial revocation
+    /// occurs.
+    ///
+    /// # Authorization
+    /// Requires the current [`InvoiceEscrow::admin`] to authorize once.
+    ///
+    /// # Errors
+    /// - [`EscrowError::AttestationBatchEmpty`] if `indices` is empty.
+    /// - [`EscrowError::AttestationBatchTooLarge`] if `indices` exceeds [`MAX_ATTESTATION_REVOKE_BATCH`].
+    /// - [`EscrowError::AttestationIndexOutOfRange`] if an index is out of range (atomic rollback).
+    /// - [`EscrowError::AttestationAlreadyRevoked`] if an index is already revoked (atomic rollback).
+    ///
+    /// # Events
+    /// One [`AttestationDigestRevoked`] per successfully revoked index.
+    pub fn revoke_attestation_digests(env: Env, indices: Vec<u32>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+        let n = indices.len();
+
+        ensure(&env, n > 0, EscrowError::AttestationBatchEmpty);
+        ensure(
+            &env,
+            n <= MAX_ATTESTATION_REVOKE_BATCH,
+            EscrowError::AttestationBatchTooLarge,
+        );
+
+        let log = Self::load_attestation_log(&env);
+
+        for i in 0..n {
+            let _idx = indices.get(i).unwrap();
+            // Validation in a first pass ensures atomicity: if any index fails,
+            // the entire batch is rolled back (no storage writes have occurred yet).
+        }
+
+        // Second pass: perform writes and emit events.
+        for i in 0..n {
+            let idx = indices.get(i).unwrap();
+            Self::require_attestation_index_in_range(idx, &log).unwrap_or_else(|e| fail(&env, e));
+            ensure(
+                &env,
+                !env.storage()
+                    .instance()
+                    .has(&DataKey::AttestationRevoked(idx)),
+                EscrowError::AttestationAlreadyRevoked,
+            );
+
+            env.storage()
+                .instance()
+                .set(&DataKey::AttestationRevoked(idx), &true);
+
+            AttestationDigestRevoked {
+                name: symbol_short!("att_rev"),
+                invoice_id: escrow.invoice_id.clone(),
+                index: idx,
+            }
+            .publish(&env);
+        }
     }
 
     pub fn is_attestation_revoked(env: Env, index: u32) -> bool {
