@@ -551,3 +551,64 @@ fn get_revoked_attestation_digests_continuation_start() {
         soroban_sdk::BytesN::from_array(&env, &[3u8; 32])
     );
 }
+
+// ── get_collateral_records ────────────────────────────────────────────────────
+
+#[test]
+fn get_collateral_records_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_attestation_escrow(&env);
+
+    let result = client.get_collateral_records(&0, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn get_collateral_records_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_attestation_escrow(&env);
+
+    for i in 1..=4 {
+        env.ledger().with_mut(|l| l.timestamp = (i as u64) * 100);
+        client.record_sme_collateral_commitment(&soroban_sdk::Symbol::new(&env, "USDC"), &(i as i128));
+    }
+
+    let result = client.get_collateral_records(&0, &2);
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.get(0).unwrap().amount, 1);
+    assert_eq!(result.get(1).unwrap().amount, 2);
+}
+
+#[test]
+fn get_collateral_records_continuation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_attestation_escrow(&env);
+
+    for i in 1..=4 {
+        env.ledger().with_mut(|l| l.timestamp = (i as u64) * 100);
+        client.record_sme_collateral_commitment(&soroban_sdk::Symbol::new(&env, "USDC"), &(i as i128));
+    }
+
+    let result = client.get_collateral_records(&2, &5);
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.get(0).unwrap().amount, 3);
+    assert_eq!(result.get(1).unwrap().amount, 4);
+}
+
+#[test]
+fn get_collateral_records_ceiling() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_attestation_escrow(&env);
+
+    for i in 1..=55 {
+        env.ledger().with_mut(|l| l.timestamp = (i as u64) * 100);
+        client.record_sme_collateral_commitment(&soroban_sdk::Symbol::new(&env, "USDC"), &(i as i128));
+    }
+
+    let result = client.get_collateral_records(&0, &100);
+    assert_eq!(result.len(), 50);
+}
