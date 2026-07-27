@@ -446,6 +446,11 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::set_yield_tiers`] received a table that violates
+    /// the required invariants (non-negative bps, non-decreasing yields,
+    /// strictly increasing lock times, non-empty).
+    YieldTierTableInvalid = 223,
 }
 
 #[inline(always)]
@@ -1988,6 +1993,21 @@ pub struct EscrowSummary {
     pub attestation_log_length: u32,
 }
 
+/// Bundled read-only snapshot of the collateral subsystem returned by
+/// [`LiquifactEscrow::get_collateral_config`].
+///
+/// Combines the admin-configured collateral limit and the current SME
+/// collateral commitment metadata into a single struct so integrators
+/// can fetch both values in one host invocation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollateralConfig {
+    /// Maximum collateral amount the admin has configured (defaults to [`MAX_INVOICE_AMOUNT`]).
+    pub collateral_limit: i128,
+    /// The recorded SME collateral commitment, or `None` if never recorded.
+    pub sme_commitment: CollateralCommitmentSnapshot,
+}
+
 // --- Events ---
 
 #[contractevent]
@@ -2250,6 +2270,17 @@ pub struct ContractUpgraded {
     #[topic]
     pub invoice_id: Symbol,
     pub new_wasm_hash: BytesN<32>,
+}
+
+/// Emitted by [`LiquifactEscrow::set_yield_tiers`] when the admin successfully
+/// replaces the yield-tier table.
+#[contractevent]
+pub struct YieldTierTableUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub tier_count: u32,
 }
 
 #[contract]
@@ -3154,6 +3185,44 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Resolve the effective yield and matched lock for a first-deposit commitment.
+    ///
+    /// Scans the yield-tier table (highest tier first) for the best qualifying
+    /// entry where `min_lock_secs <= lock`. Returns a [`YieldTierPreview`]
+    /// with the tier's `yield_bps` and `min_lock_secs`, or the escrow base
+    /// `yield_bps` with `matched_lock_secs = 0` when no tier qualifies.
+    pub(crate) fn effective_yield_for_commitment(
+        env: &Env,
+        base_yield_bps: i64,
+        lock: u64,
+    ) -> YieldTierPreview {
+        let tiers: Vec<YieldTier> = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vec<YieldTier>>(&DataKey::YieldTierTable)
+            .unwrap_or_else(|| Vec::new(env));
+
+        let mut best_bps = base_yield_bps;
+        let mut best_lock = 0u64;
+
+        let len = tiers.len();
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            let tier = tiers.get(i).unwrap();
+            if tier.min_lock_secs <= lock {
+                best_bps = tier.yield_bps;
+                best_lock = tier.min_lock_secs;
+                break;
+            }
+        }
+
+        YieldTierPreview {
+            effective_yield_bps: best_bps,
+            matched_lock_secs: best_lock,
+        }
+    }
+
     /// Pure read — no auth, no storage writes, safe for simulation.
     ///
     /// Returns a [`YieldTierPreview`] for a hypothetical contribution of
@@ -3174,14 +3243,60 @@ impl LiquifactEscrow {
     /// > **Note:** this preview reflects the rule applied at **first deposit only**. A
     /// > follow-on [`LiquifactEscrow::fund`] call does not re-select a tier.
     pub fn preview_yield_tier(env: Env, amount: i128, lock: u64) -> YieldTierPreview {
-        let _ = amount; // accepted for signature parity with fund_with_commitment; unused in lock-only selection
+        let _ = amount;
         let escrow = Self::get_escrow(env.clone());
-        let (effective_yield_bps, matched_lock_secs) =
-            Self::effective_yield_for_commitment(&env, escrow.yield_bps, lock);
-        YieldTierPreview {
-            effective_yield_bps,
-            matched_lock_secs,
+        Self::effective_yield_for_commitment(&env, escrow.yield_bps, lock)
+    }
+
+    /// Admin-only setter that replaces the yield-tier table.
+    ///
+    /// Validates invariants identical to `init`:
+    ///   - Every `yield_bps` must be `>= 0` and `<= 10_000`.
+    ///   - Lock times must be strictly increasing.
+    ///   - Yield `bps` must be non-decreasing across tiers.
+    ///   - The table must be non-empty.
+    ///
+    /// Emits [`YieldTierTableUpdated`] on success.
+    pub fn set_yield_tiers(env: Env, tiers: Vec<YieldTier>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+        let n = tiers.len();
+        ensure(&env, n > 0, EscrowError::YieldTierTableInvalid);
+
+        let mut prev_lock: u64 = 0;
+        let mut prev_bps: i64 = -1;
+
+        for i in 0..n {
+            let tier = tiers.get(i).unwrap();
+            ensure(&env, tier.yield_bps >= 0, EscrowError::YieldTierTableInvalid);
+            ensure(
+                &env,
+                tier.yield_bps <= 10_000,
+                EscrowError::YieldTierTableInvalid,
+            );
+            ensure(
+                &env,
+                tier.min_lock_secs > prev_lock,
+                EscrowError::YieldTierTableInvalid,
+            );
+            ensure(
+                &env,
+                tier.yield_bps >= prev_bps,
+                EscrowError::YieldTierTableInvalid,
+            );
+            prev_lock = tier.min_lock_secs;
+            prev_bps = tier.yield_bps;
         }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::YieldTierTable, &tiers);
+
+        YieldTierTableUpdated {
+            name: symbol_short!("yt_upd"),
+            invoice_id: escrow.invoice_id.clone(),
+            tier_count: n,
+        }
+        .publish(&env);
     }
 
     /// Retrieve the currently recorded SME collateral commitment metadata from storage.
@@ -3195,6 +3310,25 @@ impl LiquifactEscrow {
             .instance()
             .get(&DataKey::CollateralLimit)
             .unwrap_or(MAX_INVOICE_AMOUNT)
+    }
+
+    /// Read-only snapshot of the collateral subsystem: admin limit + current SME
+    /// commitment. Returns sensible defaults (max limit, no commitment) before
+    /// `init` is called.
+    pub fn get_collateral_config(env: Env) -> CollateralConfig {
+        let collateral_limit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralLimit)
+            .unwrap_or(MAX_INVOICE_AMOUNT);
+        let sme_commitment = match Self::collateral_pledge_get(&env) {
+            Some(c) => CollateralCommitmentSnapshot::Some(c),
+            None => CollateralCommitmentSnapshot::None,
+        };
+        CollateralConfig {
+            collateral_limit,
+            sme_commitment,
+        }
     }
 
     /// Retire the recorded SME collateral pledge.
@@ -3703,6 +3837,14 @@ impl LiquifactEscrow {
             allowed: if allowed { 1 } else { 0 },
         }
         .publish(&env);
+
+        let total_count: u32 = index.len();
+        AllowlistStateChanged {
+            name: symbol_short!("al_st"),
+            invoice_id: escrow.invoice_id.clone(),
+            total_count,
+        }
+        .publish(&env);
     }
 
     /// Batch add or remove investors from the allowlist.
@@ -3767,6 +3909,14 @@ impl LiquifactEscrow {
             }
             .publish(&env);
         }
+
+        let total_count: u32 = index.len();
+        AllowlistStateChanged {
+            name: symbol_short!("al_st"),
+            invoice_id: escrow.invoice_id.clone(),
+            total_count,
+        }
+        .publish(&env);
     }
 
     pub fn is_investor_allowlisted(env: Env, investor: Address) -> bool {
@@ -4573,9 +4723,9 @@ impl LiquifactEscrow {
             }
         } else {
             ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
-            let (eff, lock) =
+            let tier =
                 Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            Self::set_persistent_investor_effective_yield(&env, investor.clone(), eff);
+            Self::set_persistent_investor_effective_yield(&env, investor.clone(), tier.effective_yield_bps);
             let now = env.ledger().timestamp();
             let claim_nb = if committed_lock_secs == 0 {
                 0u64
@@ -4583,8 +4733,6 @@ impl LiquifactEscrow {
                 now.checked_add(committed_lock_secs)
                     .unwrap_or_else(|| fail(&env, EscrowError::InvestorClaimTimeOverflow))
             };
-            // Bound: reject if the claim lock would expire after the escrow maturity.
-            // Only constrained when both committed_lock_secs > 0 and maturity > 0.
             if claim_nb > 0 && escrow.maturity > 0 {
                 ensure(
                     &env,
@@ -4593,7 +4741,7 @@ impl LiquifactEscrow {
                 );
             }
             Self::set_persistent_investor_claim_not_before(&env, investor.clone(), claim_nb);
-            (eff, lock)
+            (tier.effective_yield_bps, tier.matched_lock_secs)
         };
 
         escrow.funded_amount = escrow
@@ -6505,11 +6653,11 @@ impl LiquifactEscrow {
             // If prev > 0, preserve existing effective yield and claim lock
         } else {
             ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
-            let (eff, lock) =
+            let tier =
                 Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            investor_effective_yield_bps = eff;
-            tier_lock_secs = lock;
-            Self::set_persistent_investor_effective_yield(&env, investor.clone(), eff);
+            investor_effective_yield_bps = tier.effective_yield_bps;
+            tier_lock_secs = tier.matched_lock_secs;
+            Self::set_persistent_investor_effective_yield(&env, investor.clone(), tier.effective_yield_bps);
             let now = env.ledger().timestamp();
             let claim_nb = if committed_lock_secs == 0 {
                 0u64
