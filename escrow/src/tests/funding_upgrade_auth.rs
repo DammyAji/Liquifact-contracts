@@ -70,8 +70,15 @@ fn test_upgrade_funding_admin_emits_event() {
     // before that call (defensive ordering), so it is recorded regardless.
     let _ = client.try_upgrade_funding(&admin, &hash);
 
-    let emitted = env.events().all().iter().any(|(id, _topics, _data)| id == contract_id);
-    assert!(emitted, "expected a FundingUpgradeAuthorized event from the contract");
+    let emitted = env
+        .events()
+        .all()
+        .iter()
+        .any(|(id, _topics, _data)| id == contract_id);
+    assert!(
+        emitted,
+        "expected a FundingUpgradeAuthorized event from the contract"
+    );
 }
 
 /// Without a satisfied signature the host-level `require_auth` traps before the

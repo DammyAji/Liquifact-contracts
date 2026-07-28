@@ -67,8 +67,7 @@ fn test_defaults_before_init() {
     let config = client.get_settlement_config();
 
     assert_eq!(
-        config.settlement_limit,
-        DEFAULT_SETTLEMENT_LIMIT,
+        config.settlement_limit, DEFAULT_SETTLEMENT_LIMIT,
         "settlement_limit should be DEFAULT_SETTLEMENT_LIMIT before init"
     );
     assert_eq!(config.yield_bps, 0, "yield_bps should be 0 before init");

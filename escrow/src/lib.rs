@@ -1,4 +1,3 @@
-
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(test)]
@@ -1909,7 +1908,6 @@ pub struct FundingUpgradeAuthorized {
     pub admin: Address,
     pub new_wasm_hash: BytesN<32>,
 }
-
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -3889,7 +3887,7 @@ impl LiquifactEscrow {
             ensure(
                 &env,
                 window_count < limit,
-                EscrowError::PauseToggleRateLimitExceeded
+                EscrowError::PauseToggleRateLimitExceeded,
             );
 
             // Update count
@@ -3954,7 +3952,7 @@ impl LiquifactEscrow {
             duration == 0
                 || (duration >= MIN_PAUSE_MAX_DURATION_SECS
                     && duration <= MAX_PAUSE_MAX_DURATION_SECS),
-            EscrowError::PauseMaxDurationOutOfRange
+            EscrowError::PauseMaxDurationOutOfRange,
         );
 
         let _ = Self::load_escrow_require_admin(&env);
@@ -4019,14 +4017,14 @@ impl LiquifactEscrow {
         ensure(
             &env,
             (limit == 0 && window_secs == 0) || (limit > 0 && window_secs > 0),
-            EscrowError::PauseRateLimitInvalidCombination
+            EscrowError::PauseRateLimitInvalidCombination,
         );
 
         // Validate limit
         ensure(
             &env,
             limit == 0 || (limit >= MIN_PAUSE_TOGGLE_LIMIT && limit <= MAX_PAUSE_TOGGLE_LIMIT),
-            EscrowError::PauseToggleLimitOutOfRange
+            EscrowError::PauseToggleLimitOutOfRange,
         );
 
         // Validate window
@@ -4035,7 +4033,7 @@ impl LiquifactEscrow {
             window_secs == 0
                 || (window_secs >= MIN_PAUSE_TOGGLE_WINDOW_SECS
                     && window_secs <= MAX_PAUSE_TOGGLE_WINDOW_SECS),
-            EscrowError::PauseToggleWindowOutOfRange
+            EscrowError::PauseToggleWindowOutOfRange,
         );
 
         let _ = Self::load_escrow_require_admin(&env);
@@ -5221,7 +5219,8 @@ impl LiquifactEscrow {
 
         // Track whether this call triggers the 0 → 1 transition so we can emit
         // FundingStateChanged after storage writes (no second storage read needed).
-        let status_transitioned = escrow.status == 0 && escrow.funded_amount >= escrow.funding_target;
+        let status_transitioned =
+            escrow.status == 0 && escrow.funded_amount >= escrow.funding_target;
 
         if status_transitioned {
             escrow.status = 1;
