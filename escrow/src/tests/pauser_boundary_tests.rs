@@ -14,7 +14,10 @@ use super::super::{
     MIN_PAUSE_TOGGLE_LIMIT, MIN_PAUSE_TOGGLE_WINDOW_SECS,
 };
 use crate::tests::assert_contract_error;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 fn setup_escrow(env: &Env) -> (LiquifactEscrowClient<'_>, Address, Address) {
     // Mirror of collateral_boundary_tests::setup_escrow; kept local for test isolation.
