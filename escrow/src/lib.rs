@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
 //! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
@@ -646,6 +646,19 @@ pub(crate) fn guard_status_in(env: &Env, actual_status: u32, allowed: &[u32], er
 #[inline(always)]
 pub(crate) fn require_funding_open(env: &Env, status: u32) {
     guard_status_eq(env, status, 0, EscrowError::EscrowNotOpenForFunding);
+}
+
+/// Helper: ensures investor is allowlisted if the allowlist is active.
+pub(crate) fn require_investor_allowlisted(
+    env: &Env,
+    investor: &Address,
+) -> Result<(), EscrowError> {
+    if LiquifactEscrow::is_allowlist_active(env.clone())
+        && !LiquifactEscrow::is_investor_allowlisted(env.clone(), investor.clone())
+    {
+        return Err(EscrowError::InvestorNotAllowlisted);
+    }
+    Ok(())
 }
 
 /// Shared guard: assert that no legal/compliance hold is currently active.
@@ -2711,9 +2724,7 @@ impl LiquifactEscrow {
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage()
-            .instance()
-            .remove(&collateral_pledge_key());
+        env.storage().instance().remove(&collateral_pledge_key());
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
@@ -3999,12 +4010,8 @@ impl LiquifactEscrow {
             );
         }
 
-        if Self::is_allowlist_active(env.clone()) {
-            ensure(
-                &env,
-                Self::is_investor_allowlisted(env.clone(), investor.clone()),
-                EscrowError::InvestorNotAllowlisted,
-            );
+        if let Err(e) = require_investor_allowlisted(&env, &investor) {
+            fail(&env, e);
         }
 
         let prev: i128 = Self::get_persistent_investor_contribution(&env, investor.clone());
