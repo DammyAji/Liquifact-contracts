@@ -331,6 +331,7 @@ fn test_set_paused_third_toggle_within_window_rejected() {
     client.set_pause_rate_limit(&2u32, &60u64);
 
     // Burn the quota.
+    // Counts every call, including no-op true→true transitions.
     client.set_paused(&true);
     client.set_paused(&false);
 
@@ -342,6 +343,61 @@ fn test_set_paused_third_toggle_within_window_rejected() {
 
     // is_paused must still report the post-2nd-toggle state (false).
     assert!(!client.is_paused());
+}
+
+#[test]
+fn test_pause_window_expiry_resets_counter() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _sme) = setup_escrow(&env);
+
+    // Configure a tight 60-second window.
+    client.set_pause_rate_limit(&1u32, &60u64);
+
+    // Burn the quota.
+    client.set_paused(&true);
+
+    // Still within the window — toggle rejected.
+    assert_contract_error(
+        client.try_set_paused(&false),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
+
+    // Advance the ledger past the window expiry (now + 61 seconds).
+    let mut ledger_info = env.ledger().get();
+    ledger_info.timestamp += 61;
+    env.ledger().set(ledger_info);
+
+    // After window expiry, the counter must reset and the next toggle succeeds.
+    client.set_paused(&false);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_pause_rate_limit_invalid_reconfigure_preserves_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _sme) = setup_escrow(&env);
+
+    // Configure a valid rate limit and burn the quota.
+    client.set_pause_rate_limit(&1u32, &60u64);
+    client.set_paused(&true);
+
+    // Attempt an invalid reconfigure (limit > MAX).
+    assert_contract_error(
+        client.try_set_pause_rate_limit(&(MAX_PAUSE_TOGGLE_LIMIT + 1), &60u64),
+        EscrowError::PauseToggleLimitOutOfRange,
+    );
+
+    // Invalid reconfigure must be a no-op: prior (limit, window) preserved
+    // AND the next toggle is still rejected.
+    let (limit, window) = client.get_pause_rate_limit();
+    assert_eq!(limit, 1u32);
+    assert_eq!(window, 60u64);
+    assert_contract_error(
+        client.try_set_paused(&false),
+        EscrowError::PauseToggleRateLimitExceeded,
+    );
 }
 
 #[test]
