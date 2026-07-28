@@ -4170,7 +4170,7 @@ fn settlement_validation_helper_preserves_settle_error_variants() {
     // At maturity → succeeds
     env.ledger().with_mut(|l| l.timestamp = maturity);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// Confirms `get_settlement_readiness().maturity_reached` stays aligned with
