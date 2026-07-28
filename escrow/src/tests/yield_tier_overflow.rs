@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 use super::{assert_contract_error, deploy, free_addresses, install_stellar_asset_token};
-use crate::{DataKey, EscrowError, FundingCloseSnapshot, InvoiceEscrow, YieldTier};
+use crate::{DataKey, EscrowError, FundingCloseSnapshot, InvoiceEscrow, YieldResolution, YieldTier};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     Address, Env, String, Vec as SorobanVec,
@@ -278,16 +278,16 @@ fn test_yield_tier_preview_extreme_values_no_wraparound() {
         setup_tiered_escrow(&env, "YT_PREVIEW_EXT", 1_000_000i128, 500i64, Some(tiers));
 
     // Extreme large lock (u64::MAX) and extreme amount (i128::MAX) must resolve to the highest tier without panic.
-    let (bps_max, lock_max) = client.preview_yield_tier(&i128::MAX, &u64::MAX);
-    assert_eq!(bps_max, 10_000);
-    assert_eq!(lock_max, 10_000);
+    let resolution_max = client.preview_yield_tier(&i128::MAX, &u64::MAX);
+    assert_eq!(resolution_max.effective_yield_bps, 10_000);
+    assert_eq!(resolution_max.matched_lock_secs, 10_000);
 
     // Zero / negative amount and 0 lock must safely fall back to base yield without underflow or error.
-    let (bps_zero, lock_zero) = client.preview_yield_tier(&0i128, &0u64);
-    assert_eq!(bps_zero, 500);
-    assert_eq!(lock_zero, 0);
+    let resolution_zero = client.preview_yield_tier(&0i128, &0u64);
+    assert_eq!(resolution_zero.effective_yield_bps, 500);
+    assert_eq!(resolution_zero.matched_lock_secs, 0);
 
-    let (bps_neg, lock_neg) = client.preview_yield_tier(&i128::MIN, &0u64);
-    assert_eq!(bps_neg, 500);
-    assert_eq!(lock_neg, 0);
+    let resolution_neg = client.preview_yield_tier(&i128::MIN, &0u64);
+    assert_eq!(resolution_neg.effective_yield_bps, 500);
+    assert_eq!(resolution_neg.matched_lock_secs, 0);
 }

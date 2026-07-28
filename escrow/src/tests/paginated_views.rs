@@ -4,6 +4,7 @@
 // Each test uses a fresh Env so state cannot leak across cases.
 
 use soroban_sdk::{Address, Env};
+use soroban_sdk::testutils::Address as _;
 
 // ── paginate_window unit tests ────────────────────────────────────────────────
 //

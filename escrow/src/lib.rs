@@ -648,10 +648,10 @@ pub enum EscrowError {
 
     /// [`LiquifactEscrow::set_pause_max_duration`] received a nonzero value outside
     /// [`MIN_PAUSE_MAX_DURATION_SECS`, `MAX_PAUSE_MAX_DURATION_SECS`].
-    PauseMaxDurationOutOfRange = 223,
+    PauseMaxDurationOutOfRange = 230,
     /// [`LiquifactEscrow::set_pause_rate_limit`] received a nonzero `max_toggles` outside
     /// [`MIN_PAUSE_TOGGLE_LIMIT`, `MAX_PAUSE_TOGGLE_LIMIT`].
-    PauseToggleLimitOutOfRange = 224,
+    PauseToggleLimitOutOfRange = 231,
     /// [`LiquifactEscrow::set_pause_rate_limit`] received a `window_secs` outside
     /// [`MIN_PAUSE_TOGGLE_WINDOW_SECS`, `MAX_PAUSE_TOGGLE_WINDOW_SECS`] while `max_toggles > 0`.
     PauseToggleWindowOutOfRange = 225,
@@ -669,6 +669,14 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::update_yield_bps`] received a `new_yield_bps` equal to the current value.
     /// No-op updates are rejected to prevent spurious events and unnecessary storage writes.
     YieldBpsUnchanged = 229,
+    /// [`LiquifactEscrow::set_storage_limit`] received a non-positive limit.
+    StorageLimitNotPositive = 232,
+    /// [`LiquifactEscrow::set_storage_limit`] received a limit outside allowed range.
+    StorageLimitOutOfRange = 233,
+    /// [`LiquifactEscrow::bump_ttl_batch`] received an empty escrow addresses vector.
+    BumpTtlBatchEmpty = 234,
+    /// [`LiquifactEscrow::bump_ttl_batch`] exceeded [`MAX_BUMP_TTL_BATCH`].
+    BumpTtlBatchTooLarge = 235,
 }
 
 #[inline(always)]
@@ -1013,6 +1021,10 @@ pub enum DataKey {
     /// Number of [`LiquifactEscrow::set_paused`] calls recorded within the current rate-limit
     /// window. Absent ⇒ `0`.
     PauseToggleCountInWindow,
+    /// Admin-configured ceiling on storage entries processed per batch operation.
+    /// **Additive key (ADR-007):** absent ⇒ [`DEFAULT_SETTLEMENT_LIMIT`]. Updatable via
+    /// [`LiquifactEscrow::set_storage_limit`].
+    StorageLimit,
 }
 
 // --- Data types ---
