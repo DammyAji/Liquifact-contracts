@@ -7607,3 +7607,41 @@ fn test_unfund_event_emitted() {
 
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
+
+// get_funding_config tests
+#[test]
+fn test_get_funding_config_defaults_before_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let config = client.get_funding_config();
+    assert_eq!(config.funding_target, 0);
+    assert_eq!(config.yield_bps, 0);
+    assert_eq!(config.status, 0);
+    assert!(!config.has_maturity_lock);
+    assert_eq!(config.min_contribution, 0);
+    assert_eq!(config.max_unique_investors, None);
+    assert_eq!(config.funding_deadline, None);
+    assert!(!config.allowlist_active);
+}
+
+#[test]
+fn test_get_funding_config_after_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    let mut tiers = Vec::new(&env);
+    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
+    client.init(&admin, &String::from_str(&env, "CFG001"), &sme, &50_000i128, &800i64, &1000u64, &tok, &None, &tre, &Some(tiers), &Some(500i128), &Some(10u32), &Some(20_000i128), &None, &Some(2000u64));
+    let config = client.get_funding_config();
+    assert_eq!(config.funding_target, 50_000i128);
+    assert_eq!(config.yield_bps, 800);
+    assert!(config.has_maturity_lock);
+    assert_eq!(config.min_contribution, 500i128);
+    assert_eq!(config.max_unique_investors, Some(10u32));
+    assert_eq!(config.max_per_investor, Some(20_000i128));
+    assert_eq!(config.funding_deadline, Some(2000u64));
+}
