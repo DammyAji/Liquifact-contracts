@@ -969,7 +969,7 @@ fn test_record_collateral_stored_and_does_not_block_settle() {
 
     client.fund(&investor, &TARGET);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 #[test]
@@ -1071,7 +1071,7 @@ fn test_legal_hold_blocks_settle_withdraw_claim_and_fund() {
     client.clear_legal_hold();
     assert!(!client.get_legal_hold());
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 
     client.set_legal_hold(&true);
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1703,7 +1703,7 @@ fn test_settle_passes_exactly_at_maturity_ledger_time() {
     // Advance ledger to exactly maturity — must succeed
     env.ledger().with_mut(|l| l.timestamp = 5000);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// Ledger time semantics: settle must panic one second before maturity —
