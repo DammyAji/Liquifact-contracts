@@ -61,15 +61,16 @@ mod admin;
 mod attestations;
 mod auth_matrix;
 mod cap_validation;
+mod collateral_boundary_tests;
+mod collateral_boundary_tests;
 mod collateral_config_view;
 mod collateral_limit_setter;
-mod collateral_boundary_tests;
-mod collateral_boundary_tests;
 #[rustfmt::skip]
 mod coverage;
 mod external_calls;
 mod external_calls_mocked;
 mod funding;
+mod funding_boundary_tests;
 mod funding_upgrade_auth;
 mod init;
 mod integration;
