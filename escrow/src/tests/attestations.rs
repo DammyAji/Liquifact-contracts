@@ -1202,10 +1202,10 @@ fn test_batch_append_emits_events_with_correct_indices() {
     client.append_attestation_digests(&batch);
 
     let all_events = env.events().all();
-    let new_events: soroban_sdk::Vec<_> = {
-        let mut v = soroban_sdk::Vec::new(&env);
+    let new_events: std::vec::Vec<_> = {
+        let mut v = std::vec::Vec::new();
         for i in events_before..all_events.events().len() {
-            v.push_back(all_events.events().get(i).unwrap());
+            v.push(all_events.events().get(i).unwrap().clone());
         }
         v
     };
@@ -1214,7 +1214,7 @@ fn test_batch_append_emits_events_with_correct_indices() {
     assert_eq!(new_events.len(), 2);
 
     assert_eq!(
-        new_events.get(0).unwrap(),
+        new_events[0],
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id: invoice_id.clone(),
@@ -1225,7 +1225,7 @@ fn test_batch_append_emits_events_with_correct_indices() {
     );
 
     assert_eq!(
-        new_events.get(1).unwrap(),
+        new_events[1],
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id,
@@ -1256,7 +1256,7 @@ fn test_batch_append_events_offset_by_existing_log_length() {
     let all_events = env.events().all();
     // The single new event must be at index 2.
     assert_eq!(
-        all_events.events().get(events_before).unwrap(),
+        all_events.events().get(events_before).unwrap().clone(),
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id,
