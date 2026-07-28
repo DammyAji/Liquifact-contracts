@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 //! Centralized constructors for funding-related storage keys.
 //!
 //! Funding logic (`fund`/`fund_with_commitment`/`fund_batch`/`fund_impl`, the cap and
@@ -11,9 +10,13 @@
 //! This is a pure indirection layer. No key's on-chain shape or `DataKey` discriminant changes —
 //! that contract still belongs solely to [`DataKey`] (see ADR-007) — so no migration or
 //! `SCHEMA_VERSION` bump is needed (issue #912).
+//!
+//! The module also centralizes the collateral key construction point used by the collateral
+//! entrypoints, and it documents the additive-key policy for ADR-007 so future storage variants
+//! can be introduced without silent drift.
 
 use crate::DataKey;
-use soroban_sdk::Address;
+use soroban_sdk::{contracttype, Address};
 
 /// Per-investor persistent principal recorded by `fund` / `fund_with_commitment` / `fund_batch`.
 pub(crate) fn investor_contribution(investor: Address) -> DataKey {
@@ -73,32 +76,7 @@ pub(crate) fn funding_close_snapshot() -> DataKey {
 /// Instance-storage immutable SEP-41 funding token address, set once at `init`.
 pub(crate) fn funding_token() -> DataKey {
     DataKey::FundingToken
-=======
-//! Centralised storage-key definitions for the LiquiFact escrow contract.
-//!
-//! # Purpose
-//!
-//! All persistent and instance-storage keys are defined here as variants of [`DataKey`].
-//! Typed constructor functions are provided for every key family so that call sites never
-//! build a [`DataKey`] inline — reducing the risk of typos, discriminant drift between
-//! modules, and copy-paste errors when a new key needs to be added.
-//!
-//! ## Collateral keys
-//!
-//! The collateral pledge key family is managed by [`collateral_pledge_key`]. All three
-//! collateral entrypoints (`record_sme_collateral_commitment`, `clear_sme_collateral_commitment`,
-//! `get_sme_collateral_commitment`) call this function instead of constructing
-//! `DataKey::SmeCollateralPledge` inline. This ensures any future rename or split of the
-//! collateral key cannot silently diverge across call sites.
-//!
-//! ## Additive-key policy (ADR-007)
-//!
-//! Adding a new variant is **backward-compatible** when the new key is read with
-//! `.unwrap_or(default)` and its absence does not change existing entrypoint semantics.
-//! Renaming a variant, changing its XDR discriminant, or altering the stored type of an
-//! existing key is **breaking** and requires a `migrate` path or a full redeploy.
-
-use soroban_sdk::{contracttype, Address};
+}
 
 // ---------------------------------------------------------------------------
 // DataKey enum
@@ -392,5 +370,4 @@ mod tests {
         assert!(!matches!(key, DataKey::Paused));
         assert!(!matches!(key, DataKey::ProtocolFeeBps));
     }
->>>>>>> pr-982
 }
