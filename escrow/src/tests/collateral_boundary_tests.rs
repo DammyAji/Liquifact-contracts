@@ -8,9 +8,7 @@ use super::super::{
     MAX_INVOICE_AMOUNT,
 };
 use crate::tests::assert_contract_error;
-use soroban_sdk::{
-    testutils::Address as _, Address, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 fn setup_escrow(env: &Env) -> (LiquifactEscrowClient<'_>, Address, Address) {
     let id = env.register(LiquifactEscrow, ());
