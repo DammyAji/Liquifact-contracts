@@ -166,6 +166,7 @@ pub const PERSISTENT_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
+    AllowlistParametersOutOfRange = 72,
     /// [`LiquifactEscrow::init`] rejected a non-positive invoice amount.
     AmountMustBePositive = 1,
     /// [`LiquifactEscrow::init`] rejected `yield_bps` outside `0..=10_000`.
@@ -739,6 +740,7 @@ pub(crate) fn validate_settlement_state(env: &Env, escrow: &InvoiceEscrow) {
 /// - `Clone`: required because keys are passed by reference into storage APIs and reused
 ///   across lookups/sets in the same execution path.
 pub enum DataKey {
+    AllowlistParameters,
     /// Full escrow snapshot ([`InvoiceEscrow`]); rewritten atomically on every state transition.
     Escrow,
     /// Stored schema version; written once by [`LiquifactEscrow::init`] to [`SCHEMA_VERSION`]
@@ -970,6 +972,29 @@ pub struct PauseRecord {
     pub cleared_at: Option<u64>,
 }
 
+/// One entry in the settlement record log: captures the settlement event details.
+///
+/// **Append-only:** settlement records are never deleted. Since [`LiquifactEscrow::settle`]
+/// can only be called once per escrow (status transitions from 1 → 2), the log will typically
+/// have at most one entry, but the paginated view infrastructure mirrors the pattern used by
+/// [`LiquifactEscrow::get_collateral_records`] for consistency.
+///
+/// # Fields
+/// - `settled_at`: Ledger timestamp (seconds) when settlement occurred.
+/// - `funded_amount`: Total principal funded at settlement time.
+/// - `yield_bps`: The yield basis points at settlement time.
+/// - `maturity`: The maturity timestamp at settlement time.
+/// - `settle_pool`: The total settlement pool (principal + coupon) at settlement time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettlementRecord {
+    pub settled_at: u64,
+    pub funded_amount: i128,
+    pub yield_bps: i64,
+    pub maturity: u64,
+    pub settle_pool: i128,
+}
+
 /// Return type of [`LiquifactEscrow::preview_yield_tier`].
 ///
 /// Replaces the anonymous `(i64, u64)` tuple so call sites can access fields
@@ -1034,6 +1059,21 @@ pub struct CollateralConfig {
     pub collateral_limit: i128,
     /// Current SME collateral commitment, if any.
     pub sme_commitment: CollateralCommitmentSnapshot,
+}
+
+/// Read-only metadata for the investor allowlist subsystem.
+///
+/// The view intentionally returns defaults for uninitialized deployments so off-chain
+/// callers can discover allowlist capabilities without first calling `init`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AllowlistMetadata {
+    /// Stored contract schema version; defaults to `0` before `init` writes `DataKey::Version`.
+    pub schema_version: u32,
+    /// Whether the allowlist gate is currently active; defaults to `false` when unset.
+    pub is_active: bool,
+    /// Number of currently allowlisted investors, filtered through the live per-address flags.
+    pub allowlisted_count: u32,
 }
 
 /// Comprehensive summary of the escrow contract state.
@@ -1201,6 +1241,60 @@ pub struct EscrowPartialSettle {
     #[topic]
     pub invoice_id: Symbol,
     pub funded_amount: i128,
+}
+
+/// Emitted exactly once when the escrow transitions from **open** (status 0) to **funded**
+/// (status 1), regardless of which entrypoint triggered the transition.
+///
+/// Indexers that need to react to the funding-close moment should listen for this event
+/// rather than filtering the per-deposit [`EscrowFunded`] stream for a `status == 1` payload,
+/// which would require buffering every deposit to detect the transition edge.
+///
+/// # Emission guarantees
+///
+/// - **Exactly once per escrow instance.** The `0 → 1` transition is guarded by the
+///   `FundingCloseSnapshot` write (which uses a `has` check) and by the `escrow.status == 0`
+///   precondition. Once status is 1 it never decreases, so this event can never be emitted
+///   a second time.
+/// - **No duplicate emission.** All three entrypoints that can cause the `0 → 1` transition
+///   (`fund_impl`, `update_funding_target`, `partial_settle`) emit this event in the same
+///   `if escrow.status == 0 && ...` branch that writes the status and the snapshot.
+///
+/// # Fields
+///
+/// - `name`: hardcoded `fund_st_ch` symbol — used by indexers for topic routing.
+/// - `invoice_id`: escrow invoice identifier.
+/// - `from_status`: always `0` (open); present for forward-compatibility if the event shape
+///   is reused for other transitions in the future.
+/// - `to_status`: always `1` (funded).
+/// - `funded_amount`: total principal at the moment of transition (equals
+///   [`FundingCloseSnapshot::total_principal`]).
+/// - `funding_target`: the configured target at transition time (equals
+///   [`FundingCloseSnapshot::funding_target`]).
+/// - `ledger_timestamp`: [`Env::ledger`] timestamp at the moment of transition.
+/// - `trigger`: short routing symbol identifying which entrypoint caused the transition:
+///   `fund` for `fund` / `fund_with_commitment` / `fund_batch`, `tgt_lower` for
+///   `update_funding_target`, `part_set` for `partial_settle`.
+#[contractevent]
+pub struct FundingStateChanged {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// Previous status value; always `0` (open) for the `0 → 1` transition.
+    pub from_status: u32,
+    /// New status value; always `1` (funded) for the `0 → 1` transition.
+    pub to_status: u32,
+    /// Total principal at the moment of transition.
+    pub funded_amount: i128,
+    /// Configured funding target at transition time.
+    pub funding_target: i128,
+    /// Ledger timestamp at which the transition occurred.
+    pub ledger_timestamp: u64,
+    /// Short symbol identifying the entrypoint that caused the transition:
+    /// `fund` (fund/fund_with_commitment/fund_batch), `tgt_lower` (update_funding_target),
+    /// or `part_set` (partial_settle).
+    pub trigger: Symbol,
 }
 
 #[contractevent]
@@ -4108,6 +4202,19 @@ impl LiquifactEscrow {
         count
     }
 
+    /// Returns read-only metadata for the investor allowlist subsystem.
+    ///
+    /// This view performs no authorization and does not mutate storage. It is safe to call
+    /// before initialization: absent storage keys resolve to `schema_version = 0`,
+    /// `is_active = false`, and `allowlisted_count = 0`.
+    pub fn get_allowlist_metadata(env: Env) -> AllowlistMetadata {
+        AllowlistMetadata {
+            schema_version: Self::get_version(env.clone()),
+            is_active: Self::is_allowlist_active(env.clone()),
+            allowlisted_count: Self::get_allowlisted_investors_count(env),
+        }
+    }
+
     /// Convenience alias for [`LiquifactEscrow::set_legal_hold`] with `active = false`.
     pub fn clear_legal_hold(env: Env) {
         Self::set_legal_hold(env, false);
@@ -4205,13 +4312,17 @@ impl LiquifactEscrow {
         let old_target = escrow.funding_target;
         escrow.funding_target = new_target;
 
+        // Track whether this call triggers the 0 → 1 transition so we can emit
+        // FundingStateChanged after storage writes (no second storage read needed).
+        let status_transitioned = escrow.status == 0
+            && escrow.funded_amount > 0
+            && escrow.funded_amount >= new_target
+            && !env.storage().instance().has(&DataKey::FundingCloseSnapshot);
+
         // If lowering the target causes it to equal (or fall to) the already-funded
         // amount, promote the escrow to funded and capture the immutable close snapshot
         // exactly once — mirroring the promotion logic in `fund`/`fund_with_commitment`.
-        if escrow.funded_amount > 0
-            && escrow.funded_amount >= new_target
-            && !env.storage().instance().has(&DataKey::FundingCloseSnapshot)
-        {
+        if status_transitioned {
             escrow.status = 1;
             env.storage().instance().set(
                 &DataKey::FundingCloseSnapshot,
@@ -4233,6 +4344,22 @@ impl LiquifactEscrow {
             new_target,
         }
         .publish(&env);
+
+        // Emit the dedicated funding-state-change event exactly once, only when lowering
+        // the target triggered the 0 → 1 transition.
+        if status_transitioned {
+            FundingStateChanged {
+                name: symbol_short!("fund_st_ch"),
+                invoice_id: escrow.invoice_id.clone(),
+                from_status: 0,
+                to_status: 1,
+                funded_amount: escrow.funded_amount,
+                funding_target: new_target,
+                ledger_timestamp: env.ledger().timestamp(),
+                trigger: symbol_short!("tgt_lower"),
+            }
+            .publish(&env);
+        }
 
         escrow
     }
@@ -4844,7 +4971,11 @@ impl LiquifactEscrow {
             .checked_add(amount)
             .unwrap_or_else(|| fail(&env, EscrowError::FundedAmountOverflow));
 
-        if escrow.status == 0 && escrow.funded_amount >= escrow.funding_target {
+        // Track whether this call triggers the 0 → 1 transition so we can emit
+        // FundingStateChanged after storage writes (no second storage read needed).
+        let status_transitioned = escrow.status == 0 && escrow.funded_amount >= escrow.funding_target;
+
+        if status_transitioned {
             escrow.status = 1;
             if !env.storage().instance().has(&DataKey::FundingCloseSnapshot) {
                 let snap = FundingCloseSnapshot {
@@ -4911,6 +5042,23 @@ impl LiquifactEscrow {
         }
         .publish(&env);
 
+        // Emit the dedicated funding-state-change event exactly once, only when this
+        // deposit triggered the 0 → 1 transition. Indexers can subscribe to this topic
+        // without having to buffer every EscrowFunded event to detect the edge.
+        if status_transitioned {
+            FundingStateChanged {
+                name: symbol_short!("fund_st_ch"),
+                invoice_id: escrow.invoice_id.clone(),
+                from_status: 0,
+                to_status: 1,
+                funded_amount: escrow.funded_amount,
+                funding_target: escrow.funding_target,
+                ledger_timestamp: env.ledger().timestamp(),
+                trigger: symbol_short!("fund"),
+            }
+            .publish(&env);
+        }
+
         escrow
     }
 
@@ -4963,6 +5111,20 @@ impl LiquifactEscrow {
             name: symbol_short!("part_set"),
             invoice_id: escrow.invoice_id.clone(),
             funded_amount: escrow.funded_amount,
+        }
+        .publish(&env);
+
+        // Emit the dedicated funding-state-change event. partial_settle always causes
+        // the 0 → 1 transition (guarded by the PartialSettleNotOpen check above).
+        FundingStateChanged {
+            name: symbol_short!("fund_st_ch"),
+            invoice_id: escrow.invoice_id.clone(),
+            from_status: 0,
+            to_status: 1,
+            funded_amount: escrow.funded_amount,
+            funding_target: escrow.funding_target,
+            ledger_timestamp: env.ledger().timestamp(),
+            trigger: symbol_short!("part_set"),
         }
         .publish(&env);
 
@@ -6337,5 +6499,57 @@ fn register_mock_token_if_needed(env: &Env, token_addr: &Address) {
     }));
     if result.is_err() {
         env.register_at(token_addr, DefaultMockToken, ());
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowlistParameters {
+    pub max_investor_allowlist_batch: u32,
+    pub persistent_ttl_min_extension_ledgers: u32,
+}
+
+#[contractevent]
+pub struct AllowlistParametersUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub max_investor_allowlist_batch: u32,
+    pub persistent_ttl_min_extension_ledgers: u32,
+}
+
+#[contractimpl]
+impl LiquifactEscrow {
+    pub fn set_allowlist_parameters(
+        env: Env,
+        max_investor_allowlist_batch: u32,
+        persistent_ttl_min_extension_ledgers: u32,
+    ) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        if max_investor_allowlist_batch == 0 || max_investor_allowlist_batch > 100 {
+            fail(&env, EscrowError::AllowlistParametersOutOfRange);
+        }
+        if persistent_ttl_min_extension_ledgers == 0 || persistent_ttl_min_extension_ledgers > 1_000_000 {
+            fail(&env, EscrowError::AllowlistParametersOutOfRange);
+        }
+
+        let params = AllowlistParameters {
+            max_investor_allowlist_batch,
+            persistent_ttl_min_extension_ledgers,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistParameters, &params);
+
+        AllowlistParametersUpdated {
+            name: symbol_short!("al_prm_upd"),
+            invoice_id: escrow.invoice_id,
+            max_investor_allowlist_batch,
+            persistent_ttl_min_extension_ledgers,
+        }
+        .publish(&env);
     }
 }
