@@ -624,6 +624,7 @@ pub(crate) fn guard_not_legal_hold(env: &Env, error: EscrowError) {
 ///
 /// Used internally by entrypoints to gate `fund`, `settle`, `withdraw`, and
 /// `claim_investor_payout` when an operational pause is active.
+#[allow(dead_code)] // duplicate of `LiquifactEscrow::paused_active` impl below; kept as a crate-level helper.
 pub(crate) fn paused_active(env: &Env) -> bool {
     let paused: bool = env
         .storage()
@@ -2763,23 +2764,15 @@ impl LiquifactEscrow {
                 None => return Vec::new(&env),
             };
 
-        let paused_at: Option<u64> = env.storage().instance().get(&DataKey::PausedAt);
-        let is_active = Self::paused_active(&env);
-        let len = index.len();
-
         let mut result = Vec::new(&env);
         for i in start..end {
             let activated_at = index.get(i).unwrap();
-            let is_current = (i as u64) == (len as u64 - 1);
-            let cleared_at = if is_current && is_active {
-                None
-            } else if is_current && paused_at.is_some() {
-                None
-            } else {
-                None
-            };
+            // `cleared_at` is always `None` here: only activation timestamps are stored in
+            // `PauseRecordIndex`; the cleared timestamp is materialized elsewhere when a
+            // pause is deactivated. Returning `None` is therefore correct for every record.
+            let cleared_at = None;
             result.push_back(PauseRecord {
-                activated_at: activated_at.clone(),
+                activated_at,
                 cleared_at,
             });
         }
@@ -3950,8 +3943,7 @@ impl LiquifactEscrow {
         ensure(
             &env,
             duration == 0
-                || (duration >= MIN_PAUSE_MAX_DURATION_SECS
-                    && duration <= MAX_PAUSE_MAX_DURATION_SECS),
+                || (MIN_PAUSE_MAX_DURATION_SECS..=MAX_PAUSE_MAX_DURATION_SECS).contains(&duration),
             EscrowError::PauseMaxDurationOutOfRange,
         );
 
@@ -4023,7 +4015,7 @@ impl LiquifactEscrow {
         // Validate limit
         ensure(
             &env,
-            limit == 0 || (limit >= MIN_PAUSE_TOGGLE_LIMIT && limit <= MAX_PAUSE_TOGGLE_LIMIT),
+            limit == 0 || (MIN_PAUSE_TOGGLE_LIMIT..=MAX_PAUSE_TOGGLE_LIMIT).contains(&limit),
             EscrowError::PauseToggleLimitOutOfRange,
         );
 
@@ -4031,8 +4023,8 @@ impl LiquifactEscrow {
         ensure(
             &env,
             window_secs == 0
-                || (window_secs >= MIN_PAUSE_TOGGLE_WINDOW_SECS
-                    && window_secs <= MAX_PAUSE_TOGGLE_WINDOW_SECS),
+                || (MIN_PAUSE_TOGGLE_WINDOW_SECS..=MAX_PAUSE_TOGGLE_WINDOW_SECS)
+                    .contains(&window_secs),
             EscrowError::PauseToggleWindowOutOfRange,
         );
 

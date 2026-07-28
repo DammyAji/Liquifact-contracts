@@ -11,6 +11,11 @@
 //! that contract still belongs solely to [`DataKey`] (see ADR-007) — so no migration or
 //! `SCHEMA_VERSION` bump is needed (issue #912).
 
+// Key-builder helpers are part of the crate's public API for symmetry. Call sites
+// currently use `DataKey::Variant` literals inline; the helpers are kept so the
+// indirection layer remains available without churn if/when callers migrate.
+#![allow(dead_code)]
+
 use crate::DataKey;
 use soroban_sdk::Address;
 
