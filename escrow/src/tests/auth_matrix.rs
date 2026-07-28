@@ -112,8 +112,8 @@ fn record_sme_collateral_commitment_wrong_signer_panics() {
         env,
         wrong,
         client.address,
-        symbol_short!("record_sme_collateral_commitment"),
-        &[symbol_short!("USDC").to_val(), 5_000i128.to_val()],
+        soroban_sdk::Symbol::new(&env, "record_sme_collateral_commitment"),
+        &[soroban_sdk::Symbol::new(&env, "USDC").into_val(&env), 5_000i128.into_val(&env)],
         {
             client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
         }
@@ -144,8 +144,8 @@ fn clear_sme_collateral_commitment_wrong_signer_panics() {
         env,
         wrong,
         client.address,
-        symbol_short!("clear_sme_collateral_commitment"),
-        &[],
+        soroban_sdk::Symbol::new(&env, "clear_sme_collateral_commitment"),
+        &soroban_sdk::Vec::<soroban_sdk::Val>::new(&env),
         {
             client.clear_sme_collateral_commitment();
         }
@@ -161,8 +161,8 @@ fn record_sme_collateral_commitment_admin_cannot_record() {
         env,
         admin,
         client.address,
-        symbol_short!("record_sme_collateral_commitment"),
-        &[symbol_short!("USDC").to_val(), 5_000i128.to_val()],
+        soroban_sdk::Symbol::new(&env, "record_sme_collateral_commitment"),
+        &[soroban_sdk::Symbol::new(&env, "USDC").into_val(&env), 5_000i128.into_val(&env)],
         {
             client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
         }
@@ -180,8 +180,8 @@ fn clear_sme_collateral_commitment_admin_cannot_clear() {
         env,
         admin,
         client.address,
-        symbol_short!("clear_sme_collateral_commitment"),
-        &[],
+        soroban_sdk::Symbol::new(&env, "clear_sme_collateral_commitment"),
+        &soroban_sdk::Vec::<soroban_sdk::Val>::new(&env),
         {
             client.clear_sme_collateral_commitment();
         }
@@ -209,8 +209,8 @@ fn set_allowlist_active_wrong_signer_sme_panics() {
         env,
         sme,
         client.address,
-        symbol_short!("set_allowlist_active"),
-        &[true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_allowlist_active"),
+        &[true.into_val(&env)],
         {
             client.set_allowlist_active(&true);
         }
@@ -227,8 +227,8 @@ fn set_allowlist_active_wrong_signer_stranger_panics() {
         env,
         stranger,
         client.address,
-        symbol_short!("set_allowlist_active"),
-        &[true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_allowlist_active"),
+        &[true.into_val(&env)],
         {
             client.set_allowlist_active(&true);
         }
@@ -256,8 +256,8 @@ fn set_investor_allowlisted_wrong_signer_sme_panics() {
         env,
         sme,
         client.address,
-        symbol_short!("set_investor_allowlisted"),
-        &[investor.to_val(), true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_investor_allowlisted"),
+        &[investor.into_val(&env), true.into_val(&env)],
         {
             client.set_investor_allowlisted(&investor, &true);
         }
@@ -275,8 +275,8 @@ fn set_investor_allowlisted_wrong_signer_stranger_panics() {
         env,
         stranger,
         client.address,
-        symbol_short!("set_investor_allowlisted"),
-        &[investor.to_val(), true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_investor_allowlisted"),
+        &[investor.into_val(&env), true.into_val(&env)],
         {
             client.set_investor_allowlisted(&investor, &true);
         }
@@ -309,8 +309,8 @@ fn set_investors_allowlisted_wrong_signer_sme_panics() {
         env,
         sme,
         client.address,
-        symbol_short!("set_investors_allowlisted"),
-        &[batch_val, true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_investors_allowlisted"),
+        &[batch_val, true.into_val(&env)],
         {
             client.set_investors_allowlisted(&batch, &true);
         }
@@ -331,8 +331,8 @@ fn set_investors_allowlisted_wrong_signer_stranger_panics() {
         env,
         stranger,
         client.address,
-        symbol_short!("set_investors_allowlisted"),
-        &[batch_val, true.to_val()],
+        soroban_sdk::Symbol::new(&env, "set_investors_allowlisted"),
+        &[batch_val, true.into_val(&env)],
         {
             client.set_investors_allowlisted(&batch, &true);
         }
