@@ -1,9 +1,12 @@
-//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
-//! `append_attestation_digest` (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
+//! Attestation tests: `bind_primary_attestation_hash` (single-set),
+//! `append_attestation_digest` (single-entry, bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]),
+//! and `append_attestation_digests` (batch, bounded by [`MAX_ATTESTATION_APPEND_BATCH`]).
 //!
-//! These tests prove the two chain-anchor invariants:
+//! These tests prove the chain-anchor invariants:
 //! 1. The primary hash is **write-once** — a second bind panics regardless of the digest value.
 //! 2. The append log is **capacity-bounded** — the 33rd entry panics; the 32nd succeeds.
+//! 3. The batch append entrypoint is **all-or-nothing** — any guard failure leaves the log
+//!    unchanged, and indices are assigned contiguously from the log length at call time.
 //!
 //! Neither entrypoint stores ZK proofs or performs off-chain verification. They record a
 //! 32-byte digest (e.g. SHA-256 of an IPFS CID or a KYC/KYB document bundle) so that

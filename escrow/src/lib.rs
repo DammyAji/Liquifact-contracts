@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
 //! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
@@ -2711,9 +2711,7 @@ impl LiquifactEscrow {
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage()
-            .instance()
-            .remove(&collateral_pledge_key());
+        env.storage().instance().remove(&collateral_pledge_key());
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
