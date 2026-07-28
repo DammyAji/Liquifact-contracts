@@ -15,7 +15,6 @@
 //! entrypoints, and it documents the additive-key policy for ADR-007 so future storage variants
 //! can be introduced without silent drift.
 
-use crate::DataKey;
 use soroban_sdk::{contracttype, Address};
 
 /// Per-investor persistent principal recorded by `fund` / `fund_with_commitment` / `fund_batch`.
@@ -228,6 +227,10 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Admin-configured ceiling on entries processed per settlement-batch call.
+    /// **Additive key (ADR-007):** absent ⇒ [`DEFAULT_SETTLEMENT_LIMIT`]. Updatable via
+    /// [`LiquifactEscrow::set_settlement_limit`].
+    SettlementLimit,
 }
 
 // ---------------------------------------------------------------------------

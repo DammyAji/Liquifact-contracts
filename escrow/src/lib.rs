@@ -249,6 +249,16 @@ pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
+/// Default number of entries processed per call when no explicit
+/// [`LiquifactEscrow::set_settlement_limit`] has been configured.
+pub const DEFAULT_SETTLEMENT_LIMIT: u32 = 50;
+
+/// Lower bound accepted by [`LiquifactEscrow::set_settlement_limit`].
+pub const MIN_SETTLEMENT_LIMIT: u32 = 1;
+
+/// Upper bound accepted by [`LiquifactEscrow::set_settlement_limit`].
+pub const MAX_SETTLEMENT_LIMIT: u32 = 100;
+
 /// Upper bound on [`LiquifactEscrow::sweep_terminal_dust`] per call (base units of the funding token).
 ///
 /// Caps blast radius if instrumentation mis-estimates “dust”; tune per asset decimals off-chain.
@@ -588,6 +598,10 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::set_settlement_limit`] received a limit outside
+    /// `[MIN_SETTLEMENT_LIMIT, MAX_SETTLEMENT_LIMIT]`.
+    SettlementLimitOutOfRange = 300,
 }
 
 #[inline(always)]
