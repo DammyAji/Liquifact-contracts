@@ -1026,6 +1026,29 @@ pub struct PauseRecord {
     pub cleared_at: Option<u64>,
 }
 
+/// One entry in the settlement record log: captures the settlement event details.
+///
+/// **Append-only:** settlement records are never deleted. Since [`LiquifactEscrow::settle`]
+/// can only be called once per escrow (status transitions from 1 → 2), the log will typically
+/// have at most one entry, but the paginated view infrastructure mirrors the pattern used by
+/// [`LiquifactEscrow::get_collateral_records`] for consistency.
+///
+/// # Fields
+/// - `settled_at`: Ledger timestamp (seconds) when settlement occurred.
+/// - `funded_amount`: Total principal funded at settlement time.
+/// - `yield_bps`: The yield basis points at settlement time.
+/// - `maturity`: The maturity timestamp at settlement time.
+/// - `settle_pool`: The total settlement pool (principal + coupon) at settlement time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettlementRecord {
+    pub settled_at: u64,
+    pub funded_amount: i128,
+    pub yield_bps: i64,
+    pub maturity: u64,
+    pub settle_pool: i128,
+}
+
 /// Return type of [`LiquifactEscrow::preview_yield_tier`].
 ///
 /// Replaces the anonymous `(i64, u64)` tuple so call sites can access fields
