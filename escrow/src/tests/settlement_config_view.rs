@@ -12,7 +12,7 @@ use super::super::{
     LiquifactEscrow, LiquifactEscrowClient, SettlementConfig, DEFAULT_SETTLEMENT_LIMIT,
     MAX_SETTLEMENT_LIMIT, MIN_SETTLEMENT_LIMIT,
 };
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -67,8 +67,7 @@ fn test_defaults_before_init() {
     let config = client.get_settlement_config();
 
     assert_eq!(
-        config.settlement_limit,
-        DEFAULT_SETTLEMENT_LIMIT,
+        config.settlement_limit, DEFAULT_SETTLEMENT_LIMIT,
         "settlement_limit should be DEFAULT_SETTLEMENT_LIMIT before init"
     );
     assert_eq!(config.yield_bps, 0, "yield_bps should be 0 before init");

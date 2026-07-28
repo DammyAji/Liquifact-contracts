@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Centralized constructors for funding-related storage keys.
 //!
 //! Funding logic (`fund`/`fund_with_commitment`/`fund_batch`/`fund_impl`, the cap and
@@ -73,4 +74,3 @@ pub(crate) fn funding_close_snapshot() -> DataKey {
 pub(crate) fn funding_token() -> DataKey {
     DataKey::FundingToken
 }
-

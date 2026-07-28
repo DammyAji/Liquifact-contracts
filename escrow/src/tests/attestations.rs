@@ -1269,24 +1269,16 @@ fn test_batch_append_emits_events_with_correct_indices() {
     let d1 = digest(&env, 0x20);
     let batch = soroban_sdk::vec![&env, d0.clone(), d1.clone()];
 
-    // Clear any prior events emitted during setup/init.
-    let events_before = env.events().all().events().len();
     client.append_attestation_digests(&batch);
 
     let all_events = env.events().all();
-    let new_events: std::vec::Vec<_> = {
-        let mut v = std::vec::Vec::new();
-        for i in events_before..all_events.events().len() {
-            v.push(all_events.events().get(i).unwrap().clone());
-        }
-        v
-    };
+    let new_events = all_events.events();
 
     // Expect exactly two new events.
     assert_eq!(new_events.len(), 2);
 
     assert_eq!(
-        new_events[0],
+        new_events.first().unwrap().clone(),
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id: invoice_id.clone(),
@@ -1297,7 +1289,7 @@ fn test_batch_append_emits_events_with_correct_indices() {
     );
 
     assert_eq!(
-        new_events[1],
+        new_events.get(1).unwrap().clone(),
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id,
@@ -1308,7 +1300,8 @@ fn test_batch_append_emits_events_with_correct_indices() {
     );
 }
 
-/// Batch append events correctly offset indices when the log is already partially filled.
+/// The index field in events emitted during batch appends must be correctly offset
+/// by the pre-existing log length.
 #[test]
 fn test_batch_append_events_offset_by_existing_log_length() {
     let env = Env::default();
@@ -1320,15 +1313,14 @@ fn test_batch_append_events_offset_by_existing_log_length() {
     client.append_attestation_digest(&digest(&env, 0x01));
     client.append_attestation_digest(&digest(&env, 0x02));
 
-    let events_before = env.events().all().events().len();
     let d2 = digest(&env, 0xCC);
     let batch = soroban_sdk::vec![&env, d2.clone()];
     client.append_attestation_digests(&batch);
 
     let all_events = env.events().all();
-    // The single new event must be at index 2.
+    // The single new event must be at index 2 (skipping initial 2).
     assert_eq!(
-        all_events.events().get(events_before).unwrap().clone(),
+        all_events.events().first().unwrap().clone(),
         AttestationDigestAppended {
             name: soroban_sdk::symbol_short!("att_app"),
             invoice_id,

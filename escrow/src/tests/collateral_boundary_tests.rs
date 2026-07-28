@@ -8,9 +8,7 @@ use super::super::{
     MAX_INVOICE_AMOUNT,
 };
 use crate::tests::assert_contract_error;
-use soroban_sdk::{
-    testutils::Address as _, Address, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 fn setup_escrow(env: &Env) -> (LiquifactEscrowClient<'_>, Address, Address) {
     let id = env.register(LiquifactEscrow, ());
@@ -219,7 +217,7 @@ fn test_sme_commitment_zero_amount_rejected() {
     // Record at 0 (should be rejected)
     assert_contract_error(
         client.try_record_sme_collateral_commitment(&asset, &0i128),
-        EscrowError::InvalidCollateralAmount,
+        EscrowError::CollateralAmountNotPositive,
     );
 
     // Commitment should remain None
@@ -238,7 +236,7 @@ fn test_sme_commitment_negative_amount_rejected() {
     // Record at -1 (should be rejected)
     assert_contract_error(
         client.try_record_sme_collateral_commitment(&asset, &-1i128),
-        EscrowError::InvalidCollateralAmount,
+        EscrowError::CollateralAmountNotPositive,
     );
 
     // Commitment should remain None
@@ -257,7 +255,7 @@ fn test_sme_commitment_empty_asset_symbol_rejected() {
     // Record with empty asset symbol (should be rejected)
     assert_contract_error(
         client.try_record_sme_collateral_commitment(&asset, &1_000i128),
-        EscrowError::InvalidAssetSymbol,
+        EscrowError::CollateralAssetEmpty,
     );
 
     // Commitment should remain None
