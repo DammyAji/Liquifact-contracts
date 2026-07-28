@@ -72,6 +72,7 @@ mod coverage;
 mod external_calls;
 mod external_calls_mocked;
 mod funding;
+mod funding_events;
 mod funding_upgrade_auth;
 mod init;
 mod integration;
