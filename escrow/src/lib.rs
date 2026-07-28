@@ -602,6 +602,30 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::claim_investor_payout`] blocked while operational pause is active.
     PausedBlocksInvestorClaims = 213,
 
+    // -----------------------------------------------------------------------
+    // Pause configuration validation — rate-limit window and pause-max-duration
+    // bounds enforced by [`LiquifactEscrow::set_pause_rate_limit`] and
+    // [`LiquifactEscrow::set_pause_max_duration`].
+    // Codes 230–234 — stable, append-only.
+    // -----------------------------------------------------------------------
+    /// [`LiquifactEscrow::toggle_pause`] would exceed the configured toggle rate limit.
+    /// The number of toggles within the active window has reached
+    /// `MAX_PAUSE_TOGGLE_LIMIT`. Caller should wait for the window to roll over
+    /// or raise the limit through [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleRateLimitExceeded = 230,
+    /// [`LiquifactEscrow::set_pause_max_duration`] received a duration outside
+    /// `[MIN_PAUSE_MAX_DURATION_SECS, MAX_PAUSE_MAX_DURATION_SECS]` (or non-zero outside bounds).
+    PauseMaxDurationOutOfRange = 231,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received an invalid (limit, window_secs) pair.
+    /// Both must be `0` (disabled) or both strictly positive (enabled); mixed values are rejected.
+    PauseRateLimitInvalidCombination = 232,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a `limit` outside
+    /// `[MIN_PAUSE_TOGGLE_LIMIT, MAX_PAUSE_TOGGLE_LIMIT]` (or non-zero outside bounds).
+    PauseToggleLimitOutOfRange = 233,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a `window_secs` outside
+    /// `[MIN_PAUSE_TOGGLE_WINDOW_SECS, MAX_PAUSE_TOGGLE_WINDOW_SECS]` (or non-zero outside bounds).
+    PauseToggleWindowOutOfRange = 234,
+
     /// [`LiquifactEscrow::init`] rejected `protocol_fee_bps` outside `0..=10_000`.
     ProtocolFeeBpsOutOfRange = 215,
     /// Arithmetic overflow computing protocol fee at [`LiquifactEscrow::withdraw`].
@@ -737,6 +761,7 @@ pub(crate) fn guard_not_legal_hold(env: &Env, error: EscrowError) {
 ///
 /// Used internally by entrypoints to gate `fund`, `settle`, `withdraw`, and
 /// `claim_investor_payout` when an operational pause is active.
+#[allow(dead_code)] // reserved for future read-API surfacing; entrypoints cover pause checks directly today.
 pub(crate) fn paused_active(env: &Env) -> bool {
     let paused: bool = env
         .storage()
@@ -2500,23 +2525,15 @@ impl LiquifactEscrow {
                 None => return Vec::new(&env),
             };
 
-        let paused_at: Option<u64> = env.storage().instance().get(&DataKey::PausedAt);
-        let is_active = Self::paused_active(&env);
-        let len = index.len();
-
         let mut result = Vec::new(&env);
         for i in start..end {
             let activated_at = index.get(i).unwrap();
-            let is_current = (i as u64) == (len as u64 - 1);
-            let cleared_at = if is_current && is_active {
-                None
-            } else if is_current && paused_at.is_some() {
-                None
-            } else {
-                None
-            };
+            // Future schema evolution may populate `cleared_at` with the timestamp
+            // at which the active pause was cleared; until then, records yielded
+            // from the pause index always carry `None`.
+            let cleared_at: Option<u64> = None;
             result.push_back(PauseRecord {
-                activated_at: activated_at.clone(),
+                activated_at,
                 cleared_at,
             });
         }
@@ -2806,15 +2823,15 @@ impl LiquifactEscrow {
     fn collateral_pledge_get(env: &Env) -> Option<SmeCollateralCommitment> {
         env.storage().instance().get(&DataKey::SmeCollateralPledge)
     }
-
     /// Persist a new (or replacement) SME collateral commitment to instance storage.
+    #[allow(dead_code)] // reserved for future SME-collateral read-API; cleanup after conflict resolution left this unreferenced.
     fn collateral_pledge_set(env: &Env, commitment: &SmeCollateralCommitment) {
         env.storage()
             .instance()
             .set(&DataKey::SmeCollateralPledge, commitment);
     }
-
     /// Remove the SME collateral pledge entry from instance storage.
+    #[allow(dead_code)] // reserved for future SME-collateral read-API; cleanup after conflict resolution left this unreferenced.
     fn collateral_pledge_remove(env: &Env) {
         env.storage()
             .instance()
@@ -3592,10 +3609,10 @@ impl LiquifactEscrow {
                 .unwrap_or(0);
 
             // Check if count exceeds limit
-            ensure!(
+            ensure(
                 &env,
                 window_count < limit,
-                EscrowError::PauseToggleRateLimitExceeded
+                EscrowError::PauseToggleRateLimitExceeded,
             );
 
             // Update count
@@ -3655,12 +3672,11 @@ impl LiquifactEscrow {
     /// # Errors
     /// * [`EscrowError::PauseMaxDurationOutOfRange`] if `duration` is non-zero but outside the valid range.
     pub fn set_pause_max_duration(env: Env, duration: u64) -> u64 {
-        ensure!(
+        ensure(
             &env,
             duration == 0
-                || (duration >= MIN_PAUSE_MAX_DURATION_SECS
-                    && duration <= MAX_PAUSE_MAX_DURATION_SECS),
-            EscrowError::PauseMaxDurationOutOfRange
+                || (MIN_PAUSE_MAX_DURATION_SECS..=MAX_PAUSE_MAX_DURATION_SECS).contains(&duration),
+            EscrowError::PauseMaxDurationOutOfRange,
         );
 
         let _ = Self::load_escrow_require_admin(&env);
@@ -3722,26 +3738,26 @@ impl LiquifactEscrow {
     /// * [`EscrowError::PauseRateLimitInvalidCombination`] if only one of `limit` or `window_secs` is zero.
     pub fn set_pause_rate_limit(env: Env, limit: u32, window_secs: u64) -> (u32, u64) {
         // Validate combination
-        ensure!(
+        ensure(
             &env,
             (limit == 0 && window_secs == 0) || (limit > 0 && window_secs > 0),
-            EscrowError::PauseRateLimitInvalidCombination
+            EscrowError::PauseRateLimitInvalidCombination,
         );
 
         // Validate limit
-        ensure!(
+        ensure(
             &env,
-            limit == 0 || (limit >= MIN_PAUSE_TOGGLE_LIMIT && limit <= MAX_PAUSE_TOGGLE_LIMIT),
-            EscrowError::PauseToggleLimitOutOfRange
+            limit == 0 || (MIN_PAUSE_TOGGLE_LIMIT..=MAX_PAUSE_TOGGLE_LIMIT).contains(&limit),
+            EscrowError::PauseToggleLimitOutOfRange,
         );
 
         // Validate window
-        ensure!(
+        ensure(
             &env,
             window_secs == 0
-                || (window_secs >= MIN_PAUSE_TOGGLE_WINDOW_SECS
-                    && window_secs <= MAX_PAUSE_TOGGLE_WINDOW_SECS),
-            EscrowError::PauseToggleWindowOutOfRange
+                || (MIN_PAUSE_TOGGLE_WINDOW_SECS..=MAX_PAUSE_TOGGLE_WINDOW_SECS)
+                    .contains(&window_secs),
+            EscrowError::PauseToggleWindowOutOfRange,
         );
 
         let _ = Self::load_escrow_require_admin(&env);
@@ -4826,11 +4842,7 @@ impl LiquifactEscrow {
             ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
             let (eff, lock) =
                 Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            Self::set_persistent_investor_effective_yield(
-                &env,
-                investor.clone(),
-                tier.effective_yield_bps,
-            );
+            Self::set_persistent_investor_effective_yield(&env, investor.clone(), eff);
             let now = env.ledger().timestamp();
             let claim_nb = if committed_lock_secs == 0 {
                 0u64
@@ -6171,55 +6183,6 @@ impl LiquifactEscrow {
         // 8. Persist updated escrow.
         escrow.funded_amount = new_funded_amount;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
-
-        if simple_fund {
-            // Non-tiered deposits never carry a commitment lock.
-            tier_lock_secs = 0;
-            if prev == 0 {
-                investor_effective_yield_bps = escrow.yield_bps;
-                Self::set_persistent_investor_effective_yield(
-                    &env,
-                    investor.clone(),
-                    escrow.yield_bps,
-                );
-                Self::set_persistent_investor_claim_not_before(&env, investor.clone(), 0u64);
-            } else {
-                // Returning investor: yield was set on first deposit; read it for the event.
-                investor_effective_yield_bps =
-                    Self::get_persistent_investor_effective_yield(&env, investor.clone())
-                        .unwrap_or(escrow.yield_bps);
-            }
-            // If prev > 0, preserve existing effective yield and claim lock
-        } else {
-            ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
-            let tier =
-                Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            investor_effective_yield_bps = tier.effective_yield_bps;
-            tier_lock_secs = tier.matched_lock_secs;
-            Self::set_persistent_investor_effective_yield(
-                &env,
-                investor.clone(),
-                tier.effective_yield_bps,
-            );
-            let now = env.ledger().timestamp();
-            let claim_nb = if committed_lock_secs == 0 {
-                0u64
-            } else {
-                now.checked_add(committed_lock_secs)
-                    .unwrap_or_else(|| fail(&env, EscrowError::InvestorClaimTimeOverflow))
-            };
-            // Bound: reject if the claim lock would expire after the escrow maturity.
-            // Only constrained when both committed_lock_secs > 0 and maturity > 0.
-            if claim_nb > 0 && escrow.maturity > 0 {
-                ensure(
-                    &env,
-                    claim_nb <= escrow.maturity,
-                    EscrowError::CommitmentLockExceedsMaturity,
-                );
-            }
-            Self::set_persistent_investor_claim_not_before(&env, investor.clone(), claim_nb);
-        }
-        .publish(&env);
 
         escrow
     }
