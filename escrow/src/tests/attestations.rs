@@ -978,6 +978,123 @@ fn test_require_index_in_range_empty_log_index_zero_all_callers() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// require_attestation_revocation_state helper — identical revocation-state guard
+// across all mutation callers
+// ---------------------------------------------------------------------------
+
+/// `revoke_attestation_digest` surfaces `AttestationAlreadyRevoked` when the entry
+/// is already revoked (helper called with `expected_revoked == false`).
+#[test]
+fn test_require_revocation_state_revoke_already_revoked() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.revoke_attestation_digest(&0);
+
+    assert_contract_error(
+        client.try_revoke_attestation_digest(&0),
+        EscrowError::AttestationAlreadyRevoked,
+    );
+
+    // State is unchanged — still revoked exactly once.
+    assert!(client.is_attestation_revoked(&0));
+}
+
+/// `revoke_attestation_digests` surfaces `AttestationAlreadyRevoked` on a
+/// duplicate index within the batch, rolling back the whole batch.
+#[test]
+fn test_require_revocation_state_batch_revoke_duplicate_index_rolls_back() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.append_attestation_digest(&digest(&env, 0x02));
+
+    // Index 0 appears twice — the second occurrence hits the already-revoked guard.
+    let indices = soroban_sdk::vec![&env, 0u32, 0u32];
+    assert_contract_error(
+        client.try_revoke_attestation_digests(&indices),
+        EscrowError::AttestationAlreadyRevoked,
+    );
+
+    // Whole batch rolled back — nothing revoked.
+    assert!(!client.is_attestation_revoked(&0));
+    assert!(!client.is_attestation_revoked(&1));
+}
+
+/// `revoke_attestation_digests` surfaces `AttestationAlreadyRevoked` when a batch
+/// index was revoked by a previous call, rolling back the current batch entirely.
+#[test]
+fn test_require_revocation_state_batch_revoke_preexisting_revocation_rolls_back() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.append_attestation_digest(&digest(&env, 0x02));
+    client.revoke_attestation_digest(&1); // index 1 already revoked
+
+    let indices = soroban_sdk::vec![&env, 0u32, 1u32];
+    assert_contract_error(
+        client.try_revoke_attestation_digests(&indices),
+        EscrowError::AttestationAlreadyRevoked,
+    );
+
+    // Index 0 (valid in this batch) must be rolled back; index 1 stays revoked.
+    assert!(!client.is_attestation_revoked(&0));
+    assert!(client.is_attestation_revoked(&1));
+}
+
+/// `unrevoke_attestation_digest` surfaces `AttestationNotRevoked` when the entry
+/// is not currently revoked (helper called with `expected_revoked == true`).
+#[test]
+fn test_require_revocation_state_unrevoke_not_revoked() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    assert_contract_error(
+        client.try_unrevoke_attestation_digest(&0),
+        EscrowError::AttestationNotRevoked,
+    );
+
+    // Still not revoked.
+    assert!(!client.is_attestation_revoked(&0));
+}
+
+/// The revocation-state guard runs *before* `require_auth` in `unrevoke`
+/// (ADR-002 ordering): an unauthenticated call on a not-revoked index still fails
+/// with `AttestationNotRevoked`, not an auth error.
+#[test]
+fn test_require_revocation_state_unrevoke_guard_precedes_auth() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    // No `mock_auths` — the state guard must reject before auth is required.
+    assert_contract_error(
+        client.try_unrevoke_attestation_digest(&0),
+        EscrowError::AttestationNotRevoked,
+    );
+}
+
+/// A full revoke → unrevoke → revoke cycle succeeds, proving the helper reads
+/// current storage each time (marker set, cleared, then set again).
+#[test]
+fn test_require_revocation_state_revoke_unrevoke_cycle() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+
+    client.revoke_attestation_digest(&0);
+    assert!(client.is_attestation_revoked(&0));
+
+    client.unrevoke_attestation_digest(&0);
+    assert!(!client.is_attestation_revoked(&0));
+
+    // Re-revoking after unrevoke must succeed (guard sees not-revoked again).
+    client.revoke_attestation_digest(&0);
+    assert!(client.is_attestation_revoked(&0));
+}
+
 #[test]
 fn test_revoke_attestation_digests_empty_batch_returns_typed_error() {
     let env = Env::default();
