@@ -2228,6 +2228,7 @@ impl LiquifactEscrow {
     /// `limit` is clamped to `ceiling` before the window is computed, and the window's upper
     /// bound never exceeds `len`. Uses `saturating_add` so a `start` near `u32::MAX` cannot
     /// overflow.
+    #[allow(dead_code)]
     fn paginate_window(start: u32, limit: u32, ceiling: u32, len: u32) -> Option<(u32, u32)> {
         if len == 0 || start >= len || limit == 0 {
             return None;
