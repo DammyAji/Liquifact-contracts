@@ -188,3 +188,154 @@ fn clear_sme_collateral_commitment_admin_cannot_clear() {
         }
     );
 }
+
+// ── allowlist authorization tests ────────────────────────────────────────────
+
+#[test]
+fn set_allowlist_active_no_auth_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+
+    assert_no_auth_panics!(env, {
+        client.set_allowlist_active(&true);
+    });
+}
+
+#[test]
+fn set_allowlist_active_wrong_signer_sme_panics() {
+    let env = Env::default();
+    let (client, _admin, sme, _treasury, _token) = setup_inited(&env);
+
+    assert_wrong_auth_panics!(
+        env,
+        sme,
+        client.address,
+        symbol_short!("set_allowlist_active"),
+        &[true.to_val()],
+        {
+            client.set_allowlist_active(&true);
+        }
+    );
+}
+
+#[test]
+fn set_allowlist_active_wrong_signer_stranger_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+    let stranger = Address::generate(&env);
+
+    assert_wrong_auth_panics!(
+        env,
+        stranger,
+        client.address,
+        symbol_short!("set_allowlist_active"),
+        &[true.to_val()],
+        {
+            client.set_allowlist_active(&true);
+        }
+    );
+}
+
+#[test]
+fn set_investor_allowlisted_no_auth_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+
+    assert_no_auth_panics!(env, {
+        client.set_investor_allowlisted(&investor, &true);
+    });
+}
+
+#[test]
+fn set_investor_allowlisted_wrong_signer_sme_panics() {
+    let env = Env::default();
+    let (client, _admin, sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+
+    assert_wrong_auth_panics!(
+        env,
+        sme,
+        client.address,
+        symbol_short!("set_investor_allowlisted"),
+        &[investor.to_val(), true.to_val()],
+        {
+            client.set_investor_allowlisted(&investor, &true);
+        }
+    );
+}
+
+#[test]
+fn set_investor_allowlisted_wrong_signer_stranger_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    assert_wrong_auth_panics!(
+        env,
+        stranger,
+        client.address,
+        symbol_short!("set_investor_allowlisted"),
+        &[investor.to_val(), true.to_val()],
+        {
+            client.set_investor_allowlisted(&investor, &true);
+        }
+    );
+}
+
+#[test]
+fn set_investors_allowlisted_no_auth_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+    let mut batch: SorobanVec<Address> = SorobanVec::new(&env);
+    batch.push_back(investor.clone());
+
+    assert_no_auth_panics!(env, {
+        client.set_investors_allowlisted(&batch, &true);
+    });
+}
+
+#[test]
+fn set_investors_allowlisted_wrong_signer_sme_panics() {
+    let env = Env::default();
+    let (client, _admin, sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+    let mut batch: SorobanVec<Address> = SorobanVec::new(&env);
+    batch.push_back(investor.clone());
+    let batch_val: Val = batch.clone().into();
+
+    assert_wrong_auth_panics!(
+        env,
+        sme,
+        client.address,
+        symbol_short!("set_investors_allowlisted"),
+        &[batch_val, true.to_val()],
+        {
+            client.set_investors_allowlisted(&batch, &true);
+        }
+    );
+}
+
+#[test]
+fn set_investors_allowlisted_wrong_signer_stranger_panics() {
+    let env = Env::default();
+    let (client, _admin, _sme, _treasury, _token) = setup_inited(&env);
+    let investor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let mut batch: SorobanVec<Address> = SorobanVec::new(&env);
+    batch.push_back(investor.clone());
+    let batch_val: Val = batch.clone().into();
+
+    assert_wrong_auth_panics!(
+        env,
+        stranger,
+        client.address,
+        symbol_short!("set_investors_allowlisted"),
+        &[batch_val, true.to_val()],
+        {
+            client.set_investors_allowlisted(&batch, &true);
+        }
+    );
+}
