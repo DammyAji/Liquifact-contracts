@@ -1148,6 +1148,36 @@ pub struct SettlementConfig {
     pub maturity: u64,
 }
 
+/// Read-only snapshot of the attestation subsystem configuration.
+///
+/// Bundles the attestation-relevant constants and live state so an off-chain caller
+/// can understand the full attestation gate with a single host invocation rather than
+/// stitching together individual getters.
+///
+/// Returns sensible defaults before [`LiquifactEscrow::init`] is called:
+/// - `max_append_entries` → [`MAX_ATTESTATION_APPEND_ENTRIES`]
+/// - `max_revoke_batch` → [`MAX_ATTESTATION_REVOKE_BATCH`]
+/// - `max_append_batch` → [`MAX_ATTESTATION_APPEND_BATCH`]
+/// - `max_read_page` → [`MAX_ATTESTATION_READ_PAGE`]
+/// - `primary_bound` → `false` (no hash set yet)
+/// - `append_log_length` → `0` (empty log)
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttestationConfig {
+    /// Upper bound on [`LiquifactEscrow::append_attestation_digest`] entries.
+    pub max_append_entries: u32,
+    /// Maximum number of indices that can be revoked in a single batch call.
+    pub max_revoke_batch: u32,
+    /// Maximum number of digests that can be appended in a single batch call.
+    pub max_append_batch: u32,
+    /// Upper bound on attestation digest read page size.
+    pub max_read_page: u32,
+    /// Whether the primary attestation hash has been bound.
+    pub primary_bound: bool,
+    /// Current length of the append-only attestation log.
+    pub append_log_length: u32,
+}
+
 /// Read-only metadata for the investor allowlist subsystem.
 ///
 /// The view intentionally returns defaults for uninitialized deployments so off-chain
@@ -2906,6 +2936,41 @@ impl LiquifactEscrow {
             attestation_log_length: attestation_append_log.len(),
             paused,
             protocol_fee_bps,
+        }
+    }
+
+    /// Read-only snapshot of the attestation subsystem configuration.
+    ///
+    /// Bundles the attestation-relevant constants and live state
+    /// (`primary_bound`, `append_log_length`) into a single
+    /// [`AttestationConfig`] so an off-chain caller can discover the full
+    /// attestation gate with one host invocation.
+    ///
+    /// # Defaults (before `init`)
+    /// All fields return their documented default values when the escrow has
+    /// never been initialized (additive-key semantics, ADR-007):
+    /// - `max_append_entries` → [`MAX_ATTESTATION_APPEND_ENTRIES`]
+    /// - `max_revoke_batch` → [`MAX_ATTESTATION_REVOKE_BATCH`]
+    /// - `max_append_batch` → [`MAX_ATTESTATION_APPEND_BATCH`]
+    /// - `max_read_page` → [`MAX_ATTESTATION_READ_PAGE`]
+    /// - `primary_bound` → `false`
+    /// - `append_log_length` → `0`
+    ///
+    /// # Read-only
+    /// Pure view: no `require_auth`, no storage writes, and no TTL bump.
+    pub fn get_attestation_config(env: Env) -> AttestationConfig {
+        let primary_bound = env
+            .storage()
+            .instance()
+            .has(&DataKey::PrimaryAttestationHash);
+        let append_log_length = Self::load_attestation_log(&env).len();
+        AttestationConfig {
+            max_append_entries: MAX_ATTESTATION_APPEND_ENTRIES,
+            max_revoke_batch: MAX_ATTESTATION_REVOKE_BATCH,
+            max_append_batch: MAX_ATTESTATION_APPEND_BATCH,
+            max_read_page: MAX_ATTESTATION_READ_PAGE,
+            primary_bound,
+            append_log_length,
         }
     }
 

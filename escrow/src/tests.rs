@@ -18,13 +18,14 @@
 )]
 #[allow(unused_imports)]
 use super::{
-    AttestationDigestAppended, AttestationDigestRevoked, AttestationDigestUnrevoked,
-    CollateralRecordedEvt, ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError,
-    EscrowFunded, EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingStateChanged,
-    FundingTargetUpdated, InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient,
-    MaturityMaxHorizonUpdated, MaxUniqueInvestorsCapLowered, PrimaryAttestationBound,
-    RegistryRefRebound, TreasuryDustSwept, YieldTier, MAX_ATTESTATION_APPEND_BATCH,
-    MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH, SCHEMA_VERSION,
+    AttestationConfig, AttestationDigestAppended, AttestationDigestRevoked,
+    AttestationDigestUnrevoked, CollateralRecordedEvt, ContractUpgraded, DataKey,
+    DeprecatedTransferAdminUsed, EscrowError, EscrowFunded, EscrowInitialized, EscrowUnfunded,
+    FundingCancelled, FundingStateChanged, FundingTargetUpdated, InvestorRefundedEvt,
+    LiquifactEscrow, LiquifactEscrowClient, MaturityMaxHorizonUpdated, MaxUniqueInvestorsCapLowered,
+    PrimaryAttestationBound, RegistryRefRebound, TreasuryDustSwept, YieldTier,
+    MAX_ATTESTATION_APPEND_BATCH, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
+    MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
     symbol_short,
@@ -59,6 +60,7 @@ pub(crate) fn assert_contract_error<T, E>(
 // modules stay assertion-focused and each test still owns a fresh Env.
 mod admin;
 mod attestations;
+mod attestation_config_view;
 mod auth_matrix;
 mod cap_validation;
 mod collateral_config_view;
