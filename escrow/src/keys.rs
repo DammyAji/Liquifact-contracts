@@ -180,6 +180,8 @@ pub enum DataKey {
     CollateralLimit,
     /// Admin-configured settlement limit.
     SettlementLimit,
+    /// Ordered list of beneficiary addresses and rotation timestamps; used for pagination via [`LiquifactEscrow::get_beneficiary_records`].
+    BeneficiaryRecordIndex,
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +252,11 @@ pub(crate) fn funding_token() -> DataKey {
 #[inline(always)]
 pub fn collateral_pledge_key() -> DataKey {
     DataKey::SmeCollateralPledge
+}
+
+/// Instance-storage ordered list of beneficiary records backing paginated enumeration.
+pub(crate) fn beneficiary_record_index() -> DataKey {
+    DataKey::BeneficiaryRecordIndex
 }
 
 // ---------------------------------------------------------------------------
@@ -338,5 +345,6 @@ mod tests {
         assert!(!matches!(key, DataKey::SettledAt));
         assert!(!matches!(key, DataKey::Paused));
         assert!(!matches!(key, DataKey::ProtocolFeeBps));
+        assert!(!matches!(key, DataKey::BeneficiaryRecordIndex));
     }
 }
