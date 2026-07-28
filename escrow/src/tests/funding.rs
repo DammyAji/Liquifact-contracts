@@ -7663,7 +7663,7 @@ fn funding_state_changed_emitted_once_on_exact_target_fund() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -7724,7 +7724,7 @@ fn funding_state_changed_not_emitted_on_partial_fund() {
         .iter()
         .filter(|e| {
             let candidate = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -7787,7 +7787,7 @@ fn funding_state_changed_emitted_on_threshold_crossing_deposit() {
         .iter()
         .any(|e| {
             let candidate = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -7809,7 +7809,7 @@ fn funding_state_changed_emitted_on_threshold_crossing_deposit() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -7872,7 +7872,7 @@ fn funding_state_changed_payload_reflects_overfunded_amount() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -7945,7 +7945,7 @@ fn funding_state_changed_not_emitted_for_follow_on_deposit_after_funded() {
         .filter(|e| {
             // Any FundingStateChanged with invoice_id FSC005 is a duplicate.
             let candidate = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8013,7 +8013,7 @@ fn funding_state_changed_emitted_via_fund_with_commitment() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8084,7 +8084,7 @@ fn funding_state_changed_emitted_via_update_funding_target() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8153,7 +8153,7 @@ fn funding_state_changed_not_emitted_when_target_update_does_not_trigger_transit
         .filter(|e| {
             // Any FundingStateChanged event for this invoice is unexpected.
             let candidate_any = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8222,7 +8222,7 @@ fn funding_state_changed_emitted_via_partial_settle() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8292,7 +8292,7 @@ fn funding_state_changed_emitted_via_fund_batch() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
@@ -8362,7 +8362,7 @@ fn funding_state_changed_all_payload_fields_correct() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: symbol_short!("fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
