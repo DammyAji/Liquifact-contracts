@@ -2015,7 +2015,7 @@ fn test_rotate_beneficiary_success_dual_auth() {
 #[test]
 #[should_panic]
 fn test_rotate_beneficiary_only_sme_auth_fails() {
-    use soroban_sdk::{testutils::MockAuth, IntoVal, Vec as SorobanVec};
+    use soroban_sdk::{testutils::Address, testutils::MockAuth, IntoVal, Vec as SorobanVec};
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, sme) = setup(&env);
@@ -2036,7 +2036,7 @@ fn test_rotate_beneficiary_only_sme_auth_fails() {
 #[test]
 #[should_panic]
 fn test_rotate_beneficiary_only_admin_auth_fails() {
-    use soroban_sdk::{testutils::MockAuth, IntoVal, Vec as SorobanVec};
+    use soroban_sdk::{testutils::Address, testutils::MockAuth, IntoVal, Vec as SorobanVec};
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, sme) = setup(&env);

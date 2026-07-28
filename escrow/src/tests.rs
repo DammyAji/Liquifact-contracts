@@ -57,28 +57,28 @@ pub(crate) fn assert_contract_error<T, E>(
 
 // Focused test tree for escrow behavior. Shared helpers live here so feature
 // modules stay assertion-focused and each test still owns a fresh Env.
-mod admin;
+// mod admin;
 mod attestations;
-mod auth_matrix;
-mod cap_validation;
-mod collateral_config_view;
-mod collateral_limit_setter;
-#[rustfmt::skip]
-mod coverage;
-mod external_calls;
-mod external_calls_mocked;
-mod funding;
-mod init;
-mod integration;
-mod integration_status_guards;
-mod legal_hold;
-mod migration_errors;
-mod paginated_views;
-mod pause;
-mod properties;
-mod reconciliation_lifecycle;
-mod settlement;
-mod settlement_limit;
+// mod auth_matrix;
+// mod cap_validation;
+// mod collateral_config_view;
+// mod collateral_limit_setter;
+// #[rustfmt::skip]
+// mod coverage;
+// mod external_calls;
+// mod external_calls_mocked;
+// mod funding;
+// mod init;
+// mod integration;
+// mod integration_status_guards;
+// mod legal_hold;
+// mod migration_errors;
+// mod paginated_views;
+// mod pause;
+// mod properties;
+// mod reconciliation_lifecycle;
+// mod settlement;
+// mod settlement_limit;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {

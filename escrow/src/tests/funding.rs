@@ -2,7 +2,7 @@ use super::*;
 
 use crate::EscrowError;
 
-use soroban_sdk::{Error, InvokeError};
+use soroban_sdk::{testutils::Address, Error, InvokeError};
 
 use std::fmt::Debug;
 
