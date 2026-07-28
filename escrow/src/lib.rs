@@ -1108,6 +1108,18 @@ pub struct YieldTier {
     pub yield_bps: i64,
 }
 
+/// One allowlist record returned by [`LiquifactEscrow::get_allowlist_page`].
+///
+/// `tier` is the **1-based** index into [`DataKey::YieldTierTable`] when the investor's
+/// stored effective yield matches a configured tier; `0` means base yield, not yet funded,
+/// or no matching tier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllowlistEntry {
+    pub investor: Address,
+    pub tier: u32,
+}
+
 <<<<<<< HEAD
 /// One entry in the pause record index: records when an operational pause was activated.
 ///
@@ -4309,6 +4321,88 @@ impl LiquifactEscrow {
             }
         }
         count
+    }
+
+    /// Returns a paginated page of live allowlist records as [`AllowlistEntry`] pairs.
+    ///
+    /// Uses the shared [`Self::paginate_window`] helper with ceiling
+    /// [`MAX_INVESTOR_READ_BATCH`]. Read-only and empty-safe: an empty allowlist,
+    /// `start` past the end, or `limit == 0` returns an empty `Vec` (never panics).
+    /// Revoked addresses are filtered out of the page (same live-membership rule as
+    /// [`LiquifactEscrow::get_allowlisted_investors`]).
+    ///
+    /// # Arguments
+    /// * `start` - 0-based index into `AllowlistIndex`.
+    /// * `limit` - requested page size (clamped to [`MAX_INVESTOR_READ_BATCH`]).
+    ///
+    /// # Returns
+    /// `Vec<AllowlistEntry>` for the requested window. `tier == 0` means base yield /
+    /// not funded; `tier >= 1` is the 1-based yield-tier index when applicable.
+    pub fn get_allowlist_page(env: Env, start: u32, limit: u32) -> Vec<AllowlistEntry> {
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let (start, end) =
+            match Self::paginate_window(start, limit, MAX_INVESTOR_READ_BATCH, index.len()) {
+                Some(bounds) => bounds,
+                None => return Vec::new(&env),
+            };
+
+        let tier_table: Option<Vec<YieldTier>> = env.storage().instance().get(&DataKey::YieldTierTable);
+        let escrow: InvoiceEscrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow)
+            .unwrap_or_else(|| fail(&env, EscrowError::EscrowNotInitialized));
+        let base_yield = escrow.yield_bps;
+
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            let addr = index.get(i).unwrap();
+            let is_al: bool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InvestorAllowlisted(addr.clone()))
+                .unwrap_or(false);
+            if !is_al {
+                continue;
+            }
+            let tier = Self::allowlist_tier_index(&env, &addr, base_yield, &tier_table);
+            result.push_back(AllowlistEntry {
+                investor: addr,
+                tier,
+            });
+        }
+        result
+    }
+
+    /// Resolve the 1-based yield-tier index for an allowlisted investor, or `0`.
+    fn allowlist_tier_index(
+        env: &Env,
+        investor: &Address,
+        base_yield: i64,
+        tier_table: &Option<Vec<YieldTier>>,
+    ) -> u32 {
+        let effective_yield =
+            Self::get_persistent_investor_effective_yield(env, investor.clone());
+        let eff_yield = match effective_yield {
+            Some(y) if y != base_yield => y,
+            _ => return 0,
+        };
+        let tiers = match tier_table {
+            Some(t) => t,
+            None => return 0,
+        };
+        for i in 0..tiers.len() {
+            let tier = tiers.get(i).unwrap();
+            if tier.yield_bps == eff_yield {
+                return i + 1;
+            }
+        }
+        0
     }
 
     /// Convenience alias for [`LiquifactEscrow::set_legal_hold`] with `active = false`.
