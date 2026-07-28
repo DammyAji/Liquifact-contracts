@@ -626,11 +626,9 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::set_settlement_limit`] received a limit outside
     /// `[MIN_SETTLEMENT_LIMIT, MAX_SETTLEMENT_LIMIT]`.
     SettlementLimitOutOfRange = 300,
-
     // -----------------------------------------------------------------------
     // Issue #1010 — settlement upgrade authorization
     // -----------------------------------------------------------------------
-
     /// [`LiquifactEscrow::set_yield_tiers`] rejected the input tier table: empty, out-of-range
     /// `yield_bps`, non-increasing `min_lock_secs`, or non-non-decreasing `yield_bps`.
     /// `**Code:** 223 — stable, append-only.`
@@ -3182,9 +3180,7 @@ impl LiquifactEscrow {
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage()
-            .instance()
-            .remove(&collateral_pledge_key());
+        env.storage().instance().remove(&collateral_pledge_key());
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
