@@ -436,6 +436,11 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::append_attestation_digests`] exceeded [`MAX_ATTESTATION_APPEND_BATCH`].
     AttestationAppendBatchTooLarge = 58,
 
+    /// [`LiquifactEscrow::set_attestation_parameters`] received a zero value, exceeded a hard
+    /// protocol ceiling, made the append batch larger than the append capacity, or attempted to
+    /// lower that capacity below the number of entries already stored.
+    AttestationParametersOutOfRange = 59,
+
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a non-positive amount.
     CollateralAmountNotPositive = 60,
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received an empty asset symbol.
@@ -1042,6 +1047,10 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent ⇒ [`DEFAULT_SETTLEMENT_LIMIT`]. Updatable via
     /// [`LiquifactEscrow::set_settlement_limit`].
     SettlementLimit,
+    /// Runtime limits for the attestation subsystem. This variant is appended to preserve every
+    /// existing key discriminant. **Additive key (ADR-007):** absent means the hard protocol
+    /// ceilings remain effective, preserving behavior for deployments created before this key.
+    AttestationParameters,
 }
 =======
 // Storage keys are defined in keys.rs and re-exported via pub use keys::DataKey.
@@ -1738,6 +1747,17 @@ pub struct AttestationDigestUnrevoked {
     pub index: u32,
 }
 
+/// Emitted after an administrator changes the effective attestation limits.
+#[contractevent]
+pub struct AttestationParametersUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub old_parameters: AttestationParameters,
+    pub new_parameters: AttestationParameters,
+}
+
 #[contractevent]
 pub struct MaturityMaxHorizonUpdated {
     #[topic]
@@ -1768,6 +1788,19 @@ pub struct AttestationDigestInfo {
     pub digest: BytesN<32>,
     /// `true` if the entry has been revoked via `revoke_attestation_digest`.
     pub revoked: bool,
+}
+
+/// Runtime limits for attestation writes, batches, and paginated reads.
+///
+/// Every field must be non-zero and no greater than its corresponding compile-time ceiling.
+/// The ceilings remain immutable safety limits; this configuration can only tighten them.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttestationParameters {
+    pub max_append_entries: u32,
+    pub max_append_batch: u32,
+    pub max_revoke_batch: u32,
+    pub max_read_page: u32,
 }
 
 #[contractevent]
@@ -2850,9 +2883,10 @@ impl LiquifactEscrow {
         let escrow = Self::load_escrow_require_admin(&env);
 
         let mut log: Vec<BytesN<32>> = Self::load_attestation_log(&env);
+        let parameters = Self::get_attestation_parameters(env.clone());
         ensure(
             &env,
-            log.len() < MAX_ATTESTATION_APPEND_ENTRIES,
+            log.len() < parameters.max_append_entries,
             EscrowError::AttestationAppendLogCapacityReached,
         );
         let idx = log.len();
@@ -2872,6 +2906,62 @@ impl LiquifactEscrow {
 
     pub fn get_attestation_append_log(env: Env) -> Vec<BytesN<32>> {
         Self::load_attestation_log(&env)
+    }
+
+    /// Return the effective attestation limits.
+    ///
+    /// The additive storage key is optional so pre-upgrade deployments retain the original
+    /// compile-time limits without requiring a migration.
+    pub fn get_attestation_parameters(env: Env) -> AttestationParameters {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttestationParameters)
+            .unwrap_or(AttestationParameters {
+                max_append_entries: MAX_ATTESTATION_APPEND_ENTRIES,
+                max_append_batch: MAX_ATTESTATION_APPEND_BATCH,
+                max_revoke_batch: MAX_ATTESTATION_REVOKE_BATCH,
+                max_read_page: MAX_ATTESTATION_READ_PAGE,
+            })
+    }
+
+    /// Update the attestation limits while retaining the immutable protocol ceilings.
+    ///
+    /// Requires the current escrow administrator. All fields must be non-zero and at or below
+    /// their corresponding `MAX_ATTESTATION_*` constant. `max_append_batch` cannot exceed
+    /// `max_append_entries`, and `max_append_entries` cannot be lowered below the live log length.
+    /// Invalid configurations fail atomically with
+    /// [`EscrowError::AttestationParametersOutOfRange`] (59).
+    pub fn set_attestation_parameters(env: Env, new_parameters: AttestationParameters) {
+        let escrow = Self::load_escrow_require_admin(&env);
+        let append_log_len = Self::load_attestation_log(&env).len();
+        let in_bounds = new_parameters.max_append_entries > 0
+            && new_parameters.max_append_entries <= MAX_ATTESTATION_APPEND_ENTRIES
+            && new_parameters.max_append_batch > 0
+            && new_parameters.max_append_batch <= MAX_ATTESTATION_APPEND_BATCH
+            && new_parameters.max_append_batch <= new_parameters.max_append_entries
+            && new_parameters.max_revoke_batch > 0
+            && new_parameters.max_revoke_batch <= MAX_ATTESTATION_REVOKE_BATCH
+            && new_parameters.max_read_page > 0
+            && new_parameters.max_read_page <= MAX_ATTESTATION_READ_PAGE
+            && append_log_len <= new_parameters.max_append_entries;
+        ensure(
+            &env,
+            in_bounds,
+            EscrowError::AttestationParametersOutOfRange,
+        );
+
+        let old_parameters = Self::get_attestation_parameters(env.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::AttestationParameters, &new_parameters);
+
+        AttestationParametersUpdated {
+            name: symbol_short!("att_cfg"),
+            invoice_id: escrow.invoice_id,
+            old_parameters,
+            new_parameters,
+        }
+        .publish(&env);
     }
 
     /// Atomically append multiple digests to the bounded on-chain attestation log in a single
@@ -2912,6 +3002,7 @@ impl LiquifactEscrow {
     /// | `current_log_len + digests.len() > MAX_ATTESTATION_APPEND_ENTRIES` | 51 | `AttestationAppendLogCapacityReached` |
     pub fn append_attestation_digests(env: Env, digests: Vec<BytesN<32>>) {
         let n = digests.len();
+        let parameters = Self::get_attestation_parameters(env.clone());
 
 <<<<<<< HEAD
         // Batch-size guards (surfaced before auth, consistent with revoke_attestation_digests).
@@ -2921,7 +3012,7 @@ impl LiquifactEscrow {
         ensure(&env, n > 0, EscrowError::AttestationAppendBatchEmpty);
         ensure(
             &env,
-            n <= MAX_ATTESTATION_APPEND_BATCH,
+            n <= parameters.max_append_batch,
             EscrowError::AttestationAppendBatchTooLarge,
         );
 
@@ -2932,7 +3023,7 @@ impl LiquifactEscrow {
         // Pre-flight capacity check: reject the whole batch atomically if it would overflow.
         ensure(
             &env,
-            log.len() + n <= MAX_ATTESTATION_APPEND_ENTRIES,
+            log.len().saturating_add(n) <= parameters.max_append_entries,
             EscrowError::AttestationAppendLogCapacityReached,
         );
 
@@ -3462,11 +3553,12 @@ impl LiquifactEscrow {
     /// shape as the single-index entrypoint.
     pub fn revoke_attestation_digests(env: Env, indices: Vec<u32>) {
         let n = indices.len();
+        let parameters = Self::get_attestation_parameters(env.clone());
 
         ensure(&env, n > 0, EscrowError::AttestationBatchEmpty);
         ensure(
             &env,
-            n <= MAX_ATTESTATION_REVOKE_BATCH,
+            n <= parameters.max_revoke_batch,
             EscrowError::AttestationBatchTooLarge,
         );
 
@@ -3521,7 +3613,7 @@ impl LiquifactEscrow {
             return Vec::new(&env);
         }
 
-        let actual_limit = limit.min(MAX_ATTESTATION_READ_PAGE);
+        let actual_limit = limit.min(Self::get_attestation_parameters(env.clone()).max_read_page);
         let mut result = Vec::new(&env);
         let mut i = start;
         while i < len && result.len() < actual_limit {

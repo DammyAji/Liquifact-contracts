@@ -250,6 +250,9 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Runtime limits for attestation operations. Appended to preserve all prior discriminants;
+    /// absence means the compile-time protocol ceilings remain effective.
+    AttestationParameters,
 }
 
 // ---------------------------------------------------------------------------
