@@ -40,7 +40,7 @@ mod tests {
         client.init(&admin);
 
         let new_wasm = BytesN::from_array(&env, &[1; 32]);
-        client.upgrade(&new_wasm);
+        client.upgrade(&admin, &new_wasm);
 
         assert_eq!(
             env.events().all().last().unwrap(),
@@ -53,19 +53,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "HostError")]
     fn test_upgrade_non_admin_rejected() {
         let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register_contract(None, YieldTierContract);
         let client = YieldTierContractClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
         client.init(&admin);
 
+        let non_admin = Address::generate(&env);
         let new_wasm = BytesN::from_array(&env, &[1; 32]);
         
-        // This will panic because we didn't mock auths, so require_auth() fails
-        client.upgrade(&new_wasm);
+        let result = client.try_upgrade(&non_admin, &new_wasm);
+        assert_eq!(result.err().unwrap().unwrap(), Error::NotAuthorized);
     }
 }
 

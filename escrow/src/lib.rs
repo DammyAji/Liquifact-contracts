@@ -1,4 +1,3 @@
-#![no_std]
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(test)]
@@ -3012,6 +3011,16 @@ impl LiquifactEscrow {
         TokenClient::new(&env, &token_addr).balance(&this)
     }
 
+    /// Returns the settlement's deployed version/metadata.
+    ///
+    /// Returns a sane default (0) before initialization.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0)
+    }
+
     /// Read the immutable treasury address, failing with [`EscrowError::TreasuryNotSet`]
     /// when the escrow has not been initialized.
     fn treasury_or_fail(env: &Env) -> Address {
@@ -5305,7 +5314,8 @@ impl LiquifactEscrow {
         ensure(
             &env,
             duration == 0
-                || (MIN_PAUSE_MAX_DURATION_SECS..=MAX_PAUSE_MAX_DURATION_SECS).contains(&duration),
+                || (duration >= MIN_PAUSE_MAX_DURATION_SECS
+                    && duration <= MAX_PAUSE_MAX_DURATION_SECS),
             EscrowError::PauseMaxDurationOutOfRange,
         );
 
@@ -5377,7 +5387,7 @@ impl LiquifactEscrow {
         // Validate limit
         ensure(
             &env,
-            limit == 0 || (MIN_PAUSE_TOGGLE_LIMIT..=MAX_PAUSE_TOGGLE_LIMIT).contains(&limit),
+            limit == 0 || (limit >= MIN_PAUSE_TOGGLE_LIMIT && limit <= MAX_PAUSE_TOGGLE_LIMIT),
             EscrowError::PauseToggleLimitOutOfRange,
         );
 
@@ -5385,8 +5395,8 @@ impl LiquifactEscrow {
         ensure(
             &env,
             window_secs == 0
-                || (MIN_PAUSE_TOGGLE_WINDOW_SECS..=MAX_PAUSE_TOGGLE_WINDOW_SECS)
-                    .contains(&window_secs),
+                || (window_secs >= MIN_PAUSE_TOGGLE_WINDOW_SECS
+                    && window_secs <= MAX_PAUSE_TOGGLE_WINDOW_SECS),
             EscrowError::PauseToggleWindowOutOfRange,
         );
 
@@ -8256,7 +8266,9 @@ impl LiquifactEscrow {
         if max_investor_allowlist_batch == 0 || max_investor_allowlist_batch > 100 {
             fail(&env, EscrowError::AllowlistParametersOutOfRange);
         }
-        if pers_ttl_min_ext_ledgers == 0 || pers_ttl_min_ext_ledgers > 1_000_000 {
+        if persistent_ttl_min_extension_ledgers == 0
+            || persistent_ttl_min_extension_ledgers > 1_000_000
+        {
             fail(&env, EscrowError::AllowlistParametersOutOfRange);
         }
 
