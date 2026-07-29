@@ -1,139 +1,3 @@
-#![no_std]
-//! LiquiFact Escrow Contract
-//!
-//! Holds investor funds for an invoice until settlement.
-//! - SME receives stablecoin when funding target is met ([`LiquifactEscrow::withdraw`])
-//! - SME records optional **collateral commitments** ([`LiquifactEscrow::record_sme_collateral_commitment`]) —
-//!   these are **ledger records only**; they do **not** move tokens, freeze balances,
-//!   reserve assets, or create an enforceable on-chain claim.
-//! - [`LiquifactEscrow::settle`] finalizes the escrow after maturity (when configured).
-//!
-//! ## Schema version ([`SCHEMA_VERSION`] / [`DataKey::Version`])
-//!
-//! The constant [`SCHEMA_VERSION`] is written to [`DataKey::Version`] by [`LiquifactEscrow::init`]
-//! and is the canonical source of truth for upgrade decisions. **Current value: 6.**
-//!
-//! [`LiquifactEscrow::migrate`] **fails with typed errors in all current execution paths** — no
-//! silent migration work is promised or performed. Operators must extend `migrate` before calling
-//! it, or redeploy when stored struct layout changes. See `docs/OPERATOR_RUNBOOK.md` for the full
-//! decision tree.
-//!
-//! ## SME collateral commitment metadata
-//!
-//! [`LiquifactEscrow::record_sme_collateral_commitment`] is an SME-authenticated metadata write for
-//! off-chain risk review. The stored [`SmeCollateralCommitment`] and emitted
-//! [`CollateralRecordedEvt`] are not proof of custody, lien, encumbrance, asset control, or token
-//! movement. Risk teams and indexers must label this state as reported collateral metadata and must
-//! verify supporting evidence outside this contract.
-//!
-//! ## Compliance hold (legal hold)
-//!
-//! An admin may set [`DataKey::LegalHold`] to block risk-bearing transitions until cleared:
-//! [`LiquifactEscrow::settle`], SME [`LiquifactEscrow::withdraw`], and
-//! [`LiquifactEscrow::claim_investor_payout`]. **Clearing** requires the **current**
-//! [`InvoiceEscrow::admin`] to call [`LiquifactEscrow::set_legal_hold`] with `active = false`
-//! (or [`LiquifactEscrow::clear_legal_hold`]). This contract does not embed a timelock or
-//! council multisig: production deployments **must** use a governed `admin` (multisig or
-//! protocol DAO) so a single lost key cannot strand funds indefinitely.
-//!
-//! **Failure mode:** a hold plus loss of the current admin signing key leaves funds blocked
-//! on-chain until governance regains control of admin authority. There is no break-glass bypass.
-//!
-//! **Recovery lever:** [`LiquifactEscrow::propose_admin`] and
-//! [`LiquifactEscrow::accept_admin`] are **not** gated by the hold. Governance proposes a new
-//! admin, the proposed address accepts, then the new admin clears the hold. Invariant: a hold is
-//! always clearable by whoever holds `InvoiceEscrow::admin`; recovery requires controlling that
-//! authority. See `docs/escrow-legal-hold.md` and [ADR-004](docs/adr/ADR-004-legal-hold.md).
-//!
-//! ## Authorization guard ordering
-//!
-//! Every state-mutating entrypoint follows a canonical sequence (see
-//! `docs/escrow-security-checklist.md` §6 and [ADR-002](docs/adr/ADR-002-auth-boundaries.md)):
-//!
-//! 1. **Read-only** preconditions (legal hold, status checks, input validation).
-//! 2. **`Address::require_auth()`** for the bound role ([Stellar authorization](https://developers.stellar.org/docs/build/guides/auth/contract-authorization)).
-//! 3. **Storage writes** and **SEP-41 transfers** (via [`external_calls`]).
-//!
-//! Invariant: no instance/persistent storage mutation and no token transfer occurs until
-//! step 2 succeeds. Reading [`DataKey::Escrow`] before `require_auth` is intentional — it is
-//! read-only and does not weaken the auth boundary.
-//!
-//! ## Invoice identifier (`invoice_id`)
-//!
-//! At initialization, `invoice_id` is supplied as a Soroban [`String`] and validated for length
-//! and charset before conversion to [`Symbol`] for storage. Align off-chain invoice slugs with the
-//! same rules (ASCII alphanumeric + `_`, max length [`MAX_INVOICE_ID_STRING_LEN`]) so indexers stay
-//! unambiguous.
-//!
-//! ## Funding token and registry (immutable hints)
-//!
-//! Each escrow instance binds exactly one **funding token** contract ([`DataKey::FundingToken`])
-//! at [`LiquifactEscrow::init`]; it cannot be changed after deploy. An optional **registry**
-//! ([`DataKey::RegistryRef`]) is a read-only discoverability hint only — it is **not** an authority
-//! for this contract and must not be used on-chain as proof of registry state without calling the
-//! registry yourself.
-//!
-//! ## Terminal dust sweep
-//!
-//! [`LiquifactEscrow::sweep_terminal_dust`] moves at most [`MAX_DUST_SWEEP_AMOUNT`] units of the
-//! bound funding token from this contract to the immutable **treasury** address, only when the
-//! escrow has reached a **terminal** [`InvoiceEscrow::status`] (settled, withdrawn, or cancelled).
-//! It cannot run during a legal hold. Transfers go through [`crate::external_calls`] so **pre/post
-//! token balances** must match the requested amount (standard SEP-41 behavior); fee-on-transfer or
-//! malicious tokens are **explicitly out of scope** and fail with typed errors at the balance-check
-//! boundary. This is meant for rounding residue / stray transfers, not for settling live liabilities —
-//! integrations that custody principal on-chain must keep token balances reconciled with
-//! `funded_amount` so treasury sweeps cannot pull user funds.
-//!
-//! ## Ledger time trust model
-//!
-//! [`LiquifactEscrow::settle`] and [`LiquifactEscrow::claim_investor_payout`] compare against
-//! [`Env::ledger`] timestamps only (no wall-clock oracle). Maturity, per-investor **claim locks**
-//! from [`LiquifactEscrow::fund_with_commitment`], and [`FundingCloseSnapshot`] metadata must be
-//! interpreted as **validator-observed ledger time**, including possible skew between simulated and
-//! live networks—integrators should treat boundaries as `>=` / `<` tests on integer seconds.
-//!
-//! ## Optional tiered yield (immutable table at init)
-//!
-//! Pass `yield_tiers` to [`LiquifactEscrow::init`] as [`Option`] of a Soroban [`Vec`] of [`YieldTier`].
-//! The table is **immutable** for the escrow instance. Investors who use [`LiquifactEscrow::fund_with_commitment`]
-//! on their **first** deposit select an effective [`DataKey::InvestorEffectiveYield`] from the ladder;
-//! further principal from that address must use [`LiquifactEscrow::fund`]. **Fairness:** tiers are
-//! validated non-decreasing in both `min_lock_secs` and `yield_bps` relative to the base [`InvoiceEscrow::yield_bps`].
-//!
-//! ## Funding-close snapshot (pro-rata)
-//!
-//! When status first becomes **funded**, [`DataKey::FundingCloseSnapshot`] stores total principal
-//! (including over-funding past target), the target, and ledger timestamp/sequence. **Immutable** once
-//! written; see `docs/escrow-pro-rata.md` for the authoritative pro-rata payout math and rounding rules.
-//! Off-chain share for an investor is `get_contribution(addr) / snapshot.total_principal`.
-//!
-//! ## Immutable protocol fee (SME disbursement split)
-//!
-//! [`LiquifactEscrow::init`] accepts an optional `protocol_fee_bps` (basis points, `0..=10_000`,
-//! default `0`) stored immutably under [`DataKey::ProtocolFeeBps`]. At
-//! [`LiquifactEscrow::withdraw`] the funded principal is split:
-//!
-//! ```text
-//! fee        = funded_amount * protocol_fee_bps / 10_000   (floor, checked)
-//! sme_payout = funded_amount - fee                          (checked)
-//! ```
-//!
-//! `fee` is routed to [`DataKey::Treasury`] and `sme_payout` to [`InvoiceEscrow::sme_address`].
-//! **Conservation invariant:** `sme_payout + fee == funded_amount` for every withdrawal, so no
-//! principal is created or destroyed by the split. Rounding is **floor**, so any sub-`10_000`
-//! residue stays with the SME (never over-charges the treasury). With `protocol_fee_bps == 0`
-//! the behavior is byte-for-byte identical to the pre-fee contract: the full `funded_amount`
-//! goes to the SME and no treasury transfer occurs.
-//!
-//! **Interaction with on-chain disbursement:** the fee is only realized when principal is
-//! custodied on-chain and the SME calls [`LiquifactEscrow::withdraw`] — this feature depends on
-//! the on-chain disbursement path. It does **not** apply to off-chain settlement
-//! ([`LiquifactEscrow::settle`]), investor refunds ([`LiquifactEscrow::refund`]), or investor
-//! claims ([`LiquifactEscrow::claim_investor_payout`]). The treasury here is the same immutable
-//! address used by [`LiquifactEscrow::sweep_terminal_dust`]; the fee transfer reuses the same
-//! SEP-41 balance-delta–checked path in [`external_calls`].
-
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(test)]
@@ -467,6 +331,8 @@ pub enum EscrowError {
     InvestorBatchEmpty = 70,
     /// [`LiquifactEscrow::set_investors_allowlisted`] exceeded [`MAX_INVESTOR_ALLOWLIST_BATCH`].
     InvestorBatchTooLarge = 71,
+    /// [`LiquifactEscrow::set_allowlist_parameters`] received a value outside the allowed bounds.
+    AllowlistParametersOutOfRange = 86,
     /// [`LiquifactEscrow::fund_batch`] received an empty entries vector.
     FundingBatchEmpty = 82,
     /// [`LiquifactEscrow::fund_batch`] exceeded [`MAX_FUND_BATCH`].
@@ -1000,6 +866,18 @@ pub struct SmeCollateralCommitment {
 pub struct YieldTier {
     pub min_lock_secs: u64,
     pub yield_bps: i64,
+}
+
+/// One allowlist record returned by [`LiquifactEscrow::get_allowlist_page`].
+///
+/// `tier` is the **1-based** index into [`DataKey::YieldTierTable`] when the investor's
+/// stored effective yield matches a configured tier; `0` means base yield, not yet funded,
+/// or no matching tier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllowlistEntry {
+    pub investor: Address,
+    pub tier: u32,
 }
 
 /// One entry in the pause record index: records when an operational pause was activated.
@@ -1904,6 +1782,31 @@ pub struct ContractUpgraded {
     pub name: Symbol,
     #[topic]
     pub invoice_id: Symbol,
+    pub new_wasm_hash: BytesN<32>,
+}
+
+/// Emitted by [`LiquifactEscrow::upgrade_funding`] once the caller has passed the explicit
+/// admin authorization check, immediately before the WASM is replaced.
+///
+/// This is the funding subsystem's dedicated upgrade-authorization audit trail. Unlike
+/// [`ContractUpgraded`] (emitted by the generic [`LiquifactEscrow::upgrade`]), this event also
+/// carries the authorizing `admin` address as a topic so indexers can attribute every funding
+/// upgrade to the exact account that authorized it. Like [`ContractUpgraded`], it is published
+/// **before** `env.deployer().update_current_contract_wasm` (defensive ordering).
+///
+/// # Fields
+/// - `name`: hardcoded `"fund_upg"` symbol (topic).
+/// - `invoice_id`: the escrow's `invoice_id` (topic, for indexer correlation).
+/// - `admin`: the admin address that authorized the upgrade (topic).
+/// - `new_wasm_hash`: the 32-byte hash of the incoming WASM binary.
+#[contractevent]
+pub struct FundingUpgradeAuthorized {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    #[topic]
+    pub admin: Address,
     pub new_wasm_hash: BytesN<32>,
 }
 
@@ -4330,7 +4233,8 @@ impl LiquifactEscrow {
         ensure(
             &env,
             duration == 0
-                || (MIN_PAUSE_MAX_DURATION_SECS..=MAX_PAUSE_MAX_DURATION_SECS).contains(&duration),
+                || (duration >= MIN_PAUSE_MAX_DURATION_SECS
+                    && duration <= MAX_PAUSE_MAX_DURATION_SECS),
             EscrowError::PauseMaxDurationOutOfRange,
         );
 
@@ -4400,7 +4304,7 @@ impl LiquifactEscrow {
         // Validate limit
         ensure(
             &env,
-            limit == 0 || (MIN_PAUSE_TOGGLE_LIMIT..=MAX_PAUSE_TOGGLE_LIMIT).contains(&limit),
+            limit == 0 || (limit >= MIN_PAUSE_TOGGLE_LIMIT && limit <= MAX_PAUSE_TOGGLE_LIMIT),
             EscrowError::PauseToggleLimitOutOfRange,
         );
 
@@ -4408,8 +4312,8 @@ impl LiquifactEscrow {
         ensure(
             &env,
             window_secs == 0
-                || (MIN_PAUSE_TOGGLE_WINDOW_SECS..=MAX_PAUSE_TOGGLE_WINDOW_SECS)
-                    .contains(&window_secs),
+                || (window_secs >= MIN_PAUSE_TOGGLE_WINDOW_SECS
+                    && window_secs <= MAX_PAUSE_TOGGLE_WINDOW_SECS),
             EscrowError::PauseToggleWindowOutOfRange,
         );
 
@@ -4778,6 +4682,101 @@ impl LiquifactEscrow {
             }
         }
         count
+    }
+
+    /// Returns a paginated page of live allowlist records as [`AllowlistEntry`] pairs.
+    ///
+    /// Uses the shared [`Self::paginate_window`] helper with ceiling
+    /// [`MAX_INVESTOR_READ_BATCH`]. Read-only and empty-safe: an empty allowlist,
+    /// `start` past the end, or `limit == 0` returns an empty `Vec` (never panics).
+    /// Revoked addresses are filtered out of the page (same live-membership rule as
+    /// [`LiquifactEscrow::get_allowlisted_investors`]).
+    ///
+    /// # Arguments
+    /// * `start` - 0-based index into `AllowlistIndex`.
+    /// * `limit` - requested page size (clamped to [`MAX_INVESTOR_READ_BATCH`]).
+    ///
+    /// # Returns
+    /// `Vec<AllowlistEntry>` for the requested window. `tier == 0` means base yield /
+    /// not funded; `tier >= 1` is the 1-based yield-tier index when applicable.
+    pub fn get_allowlist_page(env: Env, start: u32, limit: u32) -> Vec<AllowlistEntry> {
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let (start, end) =
+            match Self::paginate_window(start, limit, MAX_INVESTOR_READ_BATCH, index.len()) {
+                Some(bounds) => bounds,
+                None => return Vec::new(&env),
+            };
+
+        let tier_table: Option<Vec<YieldTier>> =
+            env.storage().instance().get(&DataKey::YieldTierTable);
+        let escrow: InvoiceEscrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow)
+            .unwrap_or_else(|| fail(&env, EscrowError::EscrowNotInitialized));
+        let base_yield = escrow.yield_bps;
+
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            let addr = index.get(i).unwrap();
+            let is_al: bool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InvestorAllowlisted(addr.clone()))
+                .unwrap_or(false);
+            if !is_al {
+                continue;
+            }
+            let tier = Self::allowlist_tier_index(&env, &addr, base_yield, &tier_table);
+            result.push_back(AllowlistEntry {
+                investor: addr,
+                tier,
+            });
+        }
+        result
+    }
+
+    /// Resolve the 1-based yield-tier index for an allowlisted investor, or `0`.
+    fn allowlist_tier_index(
+        env: &Env,
+        investor: &Address,
+        base_yield: i64,
+        tier_table: &Option<Vec<YieldTier>>,
+    ) -> u32 {
+        let effective_yield = Self::get_persistent_investor_effective_yield(env, investor.clone());
+        let eff_yield = match effective_yield {
+            Some(y) if y != base_yield => y,
+            _ => return 0,
+        };
+        let tiers = match tier_table {
+            Some(t) => t,
+            None => return 0,
+        };
+        for i in 0..tiers.len() {
+            let tier = tiers.get(i).unwrap();
+            if tier.yield_bps == eff_yield {
+                return i + 1;
+            }
+        }
+        0
+    }
+
+    /// Returns read-only metadata for the investor allowlist subsystem.
+    ///
+    /// This view performs no authorization and does not mutate storage. It is safe to call
+    /// before initialization: absent storage keys resolve to `schema_version = 0`,
+    /// `is_active = false`, and `allowlisted_count = 0`.
+    pub fn get_allowlist_metadata(env: Env) -> AllowlistMetadata {
+        AllowlistMetadata {
+            schema_version: Self::get_version(env.clone()),
+            is_active: Self::is_allowlist_active(env.clone()),
+            allowlisted_count: Self::get_allowlisted_investors_count(env),
+        }
     }
 
     /// Convenience alias for [`LiquifactEscrow::set_legal_hold`] with `active = false`.
@@ -5578,7 +5577,12 @@ impl LiquifactEscrow {
             .checked_add(amount)
             .unwrap_or_else(|| fail(&env, EscrowError::FundedAmountOverflow));
 
-        if escrow.status == 0 && escrow.funded_amount >= escrow.funding_target {
+        // Track whether this call triggers the 0 → 1 transition so we can emit
+        // FundingStateChanged after storage writes (no second storage read needed).
+        let status_transitioned =
+            escrow.status == 0 && escrow.funded_amount >= escrow.funding_target;
+
+        if status_transitioned {
             escrow.status = 1;
             if !env
                 .storage()
@@ -7214,5 +7218,57 @@ fn register_mock_token_if_needed(env: &Env, token_addr: &Address) {
     }));
     if result.is_err() {
         env.register_at(token_addr, DefaultMockToken, ());
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowlistParameters {
+    pub max_investor_allowlist_batch: u32,
+    pub persist_ttl_min_ext_ledgers: u32,
+}
+
+#[contractevent]
+pub struct AllowlistParametersUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub max_investor_allowlist_batch: u32,
+    pub persist_ttl_min_ext_ledgers: u32,
+}
+
+#[contractimpl]
+impl LiquifactEscrow {
+    pub fn set_allowlist_parameters(
+        env: Env,
+        max_investor_allowlist_batch: u32,
+        persist_ttl_min_ext_ledgers: u32,
+    ) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        if max_investor_allowlist_batch == 0 || max_investor_allowlist_batch > 100 {
+            fail(&env, EscrowError::AllowlistParametersOutOfRange);
+        }
+        if persist_ttl_min_ext_ledgers == 0 || persist_ttl_min_ext_ledgers > 1_000_000 {
+            fail(&env, EscrowError::AllowlistParametersOutOfRange);
+        }
+
+        let params = AllowlistParameters {
+            max_investor_allowlist_batch,
+            persist_ttl_min_ext_ledgers,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistParameters, &params);
+
+        AllowlistParametersUpdated {
+            name: symbol_short!("al_prm_up"),
+            invoice_id: escrow.invoice_id,
+            max_investor_allowlist_batch,
+            persist_ttl_min_ext_ledgers,
+        }
+        .publish(&env);
     }
 }
