@@ -150,6 +150,7 @@ use soroban_sdk::{
 
 pub mod external_calls;
 pub mod keys;
+pub use keys::{beneficiary_record_index, collateral_pledge_key, DataKey};
 
 /// Current storage schema version written to [`DataKey::Version`] by [`LiquifactEscrow::init`].
 ///
@@ -288,6 +289,9 @@ pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 pub const MAX_PAUSE_READ_PAGE: u32 = 50;
 /// Maximum number of beneficiary records returned by a single paginated read.
 pub const MAX_BENEFICIARY_READ_PAGE: u32 = 50;
+
+/// Upper bound on collateral record read page size.
+pub const MAX_COLLATERAL_READ_PAGE: u32 = 50;
 
 /// Minimum pause max duration (seconds) for auto-expiry.
 pub const MIN_PAUSE_MAX_DURATION_SECS: u64 = 300;
@@ -1989,6 +1993,14 @@ pub struct EscrowUnfunded {
     pub new_funded_amount: i128,
     /// Ledger timestamp at which the withdrawal occurred.
     pub timestamp: u64,
+}
+
+/// A snapshot of the beneficiary (SME) address at a given time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiaryRecord {
+    pub sme_address: Address,
+    pub recorded_at: u64,
 }
 
 #[contractevent]
@@ -3868,6 +3880,48 @@ impl LiquifactEscrow {
     /// when the slice is non-empty, or `None` when the collection is empty, `start` is
     /// past the end, or `limit` is zero.
     ///
+    /// The returned `end` is guaranteed to be `<= len` and at most `ceiling` items from
+    /// `start`. Addition is saturating so `start` near `u32::MAX` will not panic.
+    fn paginate_window(start: u32, limit: u32, ceiling: u32, len: u32) -> Option<(u32, u32)> {
+        if start >= len || limit == 0 {
+            return None;
+        }
+        let actual_limit = limit.min(ceiling);
+        let end = start.saturating_add(actual_limit).min(len);
+        Some((start, end))
+    }
+
+    /// Returns a paginated list of [`BeneficiaryRecord`] entries representing the beneficiary rotation history.
+    ///
+    /// The returned list includes the initial beneficiary (if initialization recorded it) and
+    /// any subsequent addresses set via [`LiquifactEscrow::rotate_beneficiary`].
+    ///
+    /// # Pagination
+    /// * `start` - The zero-based index of the first record to return.
+    /// * `limit` - The maximum number of records to return (capped at [`MAX_BENEFICIARY_READ_PAGE`]).
+    pub fn get_beneficiary_records(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<BeneficiaryRecord> {
+        let index: soroban_sdk::Vec<BeneficiaryRecord> = env
+            .storage()
+            .instance()
+            .get(&beneficiary_record_index())
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        match Self::paginate_window(start, limit, MAX_BENEFICIARY_READ_PAGE, index.len()) {
+            Some((s, e)) => {
+                let mut slice = soroban_sdk::Vec::new(&env);
+                for i in s..e {
+                    slice.push_back(index.get(i).unwrap());
+                }
+                slice
+            }
+            None => soroban_sdk::Vec::new(&env),
+        }
+    }
+
     /// Returns a paginated list of [`PauseRecord`] entries.
     ///
     /// **Pause records** provide an immutable audit trail of all pause activations. Each time
