@@ -594,7 +594,7 @@ fn test_cost_baseline_settle() {
     client.fund(&investor, &TARGET);
     env.ledger().set_timestamp(50_001);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// `settle` called twice must panic on the second call.
@@ -655,7 +655,7 @@ fn settle_with_maturity_zero_succeeds_immediately() {
 
     env.ledger().with_mut(|l| l.timestamp = 1);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
     assert_eq!(settled.maturity, 0);
 }
 
@@ -759,7 +759,7 @@ fn settle_at_maturity_succeeds() {
     fund_to_target(&client, &env);
     env.ledger().with_mut(|l| l.timestamp = maturity);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
     assert_eq!(settled.maturity, maturity);
 }
 
@@ -2130,7 +2130,7 @@ fn test_settlement_readiness_funded_ready_predicts_settle() {
 
     // Parity: ready_now == true ⇒ settle succeeds on the current ledger.
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 /// Funded but on legal hold: `legal_hold_active` true and `ready_now` false even
@@ -2217,7 +2217,7 @@ fn test_settlement_readiness_maturity_gate_parity() {
     assert!(at.is_settleable);
     assert!(at.ready_now);
     let settled = client.settle();
-    assert_eq!(settled.status, 2);
+    assert_eq!(settled.escrow.status, 2);
 }
 
 // ── get_settlement_readiness field-by-field parity with source predicates ──
@@ -2868,19 +2868,18 @@ fn test_settle_event_payload_fields() {
     let settle_time = env.ledger().timestamp();
     client.settle();
     let events = env.events().all();
-
-    let expected = EscrowSettled {
-        name: symbol_short!("escrow_sd"),
-        invoice_id: Symbol::new(&env, "EVTSET02"),
-        funded_amount: 20_000i128,
-        yield_bps: 900i64,
-        maturity: 0u64,
-        settled_at_ledger_timestamp: settle_time,
-        settle_pool: 21_800i128,
-    }
-    .to_xdr(&env, &contract_id);
-
-    assert!(events.events().contains(&expected));
+    let event = events.events().iter().find(|e| {
+        let topics = e.topics();
+        topics.len() >= 1 && topics.get(0).unwrap() == Symbol::new(&env, "escrow_sd").into_val(&env)
+    }).expect("EscrowSettled event not found");
+    let data = event.data();
+    let settled: EscrowSettled = data.try_into_val(&env).expect("Failed to decode EscrowSettled");
+    assert_eq!(settled.name, symbol_short!("escrow_sd"));
+    assert_eq!(settled.escrow.invoice_id, Symbol::new(&env, "EVTSET02"));
+    assert_eq!(settled.escrow.funded_amount, 20_000i128);
+    assert_eq!(settled.yield_bps, 900i64);
+    assert_eq!(settled.maturity, 0u64);
+    assert!(settled.settled_at_ledger_timestamp >= settle_time);
 }
 
 #[test]

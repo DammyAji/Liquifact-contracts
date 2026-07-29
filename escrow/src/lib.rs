@@ -1144,6 +1144,37 @@ pub struct YieldTierPreview {
     pub matched_lock_secs: u64,
 }
 
+/// Return type of [`LiquifactEscrow::settle`].
+///
+/// Bundles the four outputs the settlement transition produces so callers can
+/// access them by name instead of having to thread `escrow.status`,
+/// `DataKey::SettledAt`, and the recomputed `coupon` / `settle_pool` through
+/// separate host invocations.
+///
+/// Replaces the previous `InvoiceEscrow`-only return so off-chain clients
+/// no longer have to recompute the coupon or re-fetch the settlement
+/// timestamp via a second view call. Mirrors the [`YieldTierPreview`]
+/// pattern established by `preview_yield_tier` (PR #1112).
+///
+/// # Fields
+/// - `escrow`: The full post-transition [`InvoiceEscrow`] snapshot (`status == 2`).
+/// - `coupon`: The coupon component (`floor(funded_amount * yield_bps / 10_000)`)
+///   used to derive the settlement pool. Mirrors the value emitted in
+///   [`EscrowSettled`] via `settle_pool - funded_amount` but exposed directly
+///   to avoid the off-chain subtraction.
+/// - `settle_pool`: The total settlement pool (`funded_amount + coupon`) used
+///   as the pro-rata payout numerator by [`compute_investor_payout`].
+/// - `settled_at`: The ledger timestamp recorded at `DataKey::SettledAt` when
+///   the transition occurred.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettlementResult {
+    pub escrow: InvoiceEscrow,
+    pub coupon: i128,
+    pub settle_pool: i128,
+    pub settled_at: u64,
+}
+
 /// Captured exactly once at the first ledger transition to **funded** so settlement and claims can
 /// use a stable total principal and target. If the threshold-crossing deposit overshoots
 /// [`InvoiceEscrow::funding_target`], [`FundingCloseSnapshot::total_principal`] records the full
@@ -6796,7 +6827,7 @@ impl LiquifactEscrow {
         escrow
     }
 
-    pub fn settle(env: Env) -> InvoiceEscrow {
+    pub fn settle(env: Env) -> SettlementResult {
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
             &env,
@@ -6862,7 +6893,12 @@ impl LiquifactEscrow {
         }
         .publish(&env);
 
-        escrow
+        SettlementResult {
+            escrow,
+            coupon,
+            settle_pool,
+            settled_at: now,
+        }
     }
 
     /// SME pulls funded liquidity, net of the immutable protocol fee.
