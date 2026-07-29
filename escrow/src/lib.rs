@@ -108,6 +108,26 @@ pub const MAX_REFUND_BATCH: u32 = 50;
 /// Upper bound on [`LiquifactEscrow::set_investors_allowlisted`] batch size.
 pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 
+/// Default maximum number of simultaneously-allowlisted investor addresses.
+///
+/// Applied when no explicit limit has been set via [`LiquifactEscrow::set_allowlist_limit`].
+/// Matches [`MAX_INVESTOR_ALLOWLIST_BATCH`] so the out-of-the-box behaviour is unchanged
+/// relative to a single full-batch call.
+pub const DEFAULT_ALLOWLIST_LIMIT: u32 = 1_000;
+
+/// Minimum value accepted by [`LiquifactEscrow::set_allowlist_limit`].
+///
+/// Prevents an admin from accidentally setting the limit to zero (which would make the
+/// allowlist permanently un-fillable) while still allowing arbitrarily small lists.
+pub const MIN_ALLOWLIST_LIMIT: u32 = 1;
+
+/// Maximum value accepted by [`LiquifactEscrow::set_allowlist_limit`].
+///
+/// Caps the `AllowlistIndex` vector length to keep instance-storage bounded and
+/// per-call work predictable. An admin that needs a larger allowlist should use
+/// an off-chain registry and keep the allowlist gate disabled.
+pub const MAX_ALLOWLIST_LIMIT: u32 = 10_000;
+
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
@@ -499,6 +519,14 @@ pub enum EscrowError {
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
 
+    /// [`LiquifactEscrow::set_allowlist_limit`] received a value outside
+    /// `MIN_ALLOWLIST_LIMIT..=MAX_ALLOWLIST_LIMIT`.
+    AllowlistLimitOutOfRange = 223,
+
+    /// [`LiquifactEscrow::set_investor_allowlisted`] or [`LiquifactEscrow::set_investors_allowlisted`]
+    /// would cause the total number of allowlisted addresses to exceed the configured
+    /// (or default) allowlist limit.
+    AllowlistCapacityReached = 224,
     /// [`LiquifactEscrow::set_settlement_limit`] received a limit outside
     /// `[MIN_SETTLEMENT_LIMIT, MAX_SETTLEMENT_LIMIT]`.
     SettlementLimitOutOfRange = 300,
@@ -959,6 +987,12 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Maximum number of simultaneously-allowlisted investor addresses.
+    ///
+    /// Set by the admin via [`LiquifactEscrow::set_allowlist_limit`].
+    /// **Additive key (ADR-007):** absent ⇒ falls back to [`DEFAULT_ALLOWLIST_LIMIT`].
+    /// Must be in the range `MIN_ALLOWLIST_LIMIT..=MAX_ALLOWLIST_LIMIT`.
+    AllowlistLimit,
     /// Admin-configured ceiling on [`LiquifactEscrow::record_sme_collateral_commitment`] `amount`.
     /// **Additive key (ADR-007):** absent ⇒ [`MAX_INVOICE_AMOUNT`] (no effective limit beyond the
     /// global invoice-amount ceiling). Updatable via [`LiquifactEscrow::set_collateral_limit`].
@@ -4405,7 +4439,46 @@ impl LiquifactEscrow {
             .unwrap_or(false)
     }
 
+    /// Set the maximum number of simultaneously-allowlisted investor addresses.
+    ///
+    /// The limit is validated against [`MIN_ALLOWLIST_LIMIT`] and [`MAX_ALLOWLIST_LIMIT`] before
+    /// being stored. Requires admin authorisation.
+    ///
+    /// # Errors
+    /// - [`EscrowError::AllowlistLimitOutOfRange`] when `limit < MIN_ALLOWLIST_LIMIT` or
+    ///   `limit > MAX_ALLOWLIST_LIMIT`.
+    ///
+    /// # Storage key
+    /// [`DataKey::AllowlistLimit`] — instance storage, additive (absent ⇒ [`DEFAULT_ALLOWLIST_LIMIT`]).
+    pub fn set_allowlist_limit(env: Env, limit: u32) {
+        Self::load_escrow_require_admin(&env);
+        ensure(
+            &env,
+            limit >= MIN_ALLOWLIST_LIMIT && limit <= MAX_ALLOWLIST_LIMIT,
+            EscrowError::AllowlistLimitOutOfRange,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistLimit, &limit);
+    }
+
+    /// Return the current allowlist limit.
+    ///
+    /// Returns the stored value when one has been set via [`LiquifactEscrow::set_allowlist_limit`],
+    /// or [`DEFAULT_ALLOWLIST_LIMIT`] when no explicit limit has been configured.
+    pub fn get_allowlist_limit(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowlistLimit)
+            .unwrap_or(DEFAULT_ALLOWLIST_LIMIT)
+    }
+
     /// Add or remove an investor from the allowlist.
+    ///
+    /// When `allowed` is `true` and the investor is not already allowlisted, the total
+    /// allowlisted count is checked against the configured (or default) limit before the
+    /// entry is written. Rejects with [`EscrowError::AllowlistCapacityReached`] when the
+    /// limit would be exceeded.
     pub fn set_investor_allowlisted(env: Env, investor: Address, allowed: bool) {
         let escrow = Self::load_escrow_require_admin(&env);
 
@@ -4415,10 +4488,6 @@ impl LiquifactEscrow {
             .get(&DataKey::InvestorAllowlisted(investor.clone()))
             .unwrap_or(false);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::InvestorAllowlisted(investor.clone()), &allowed);
-
         // Maintain the allowlist index
         let mut index: Vec<Address> = env
             .storage()
@@ -4427,6 +4496,17 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| Vec::new(&env));
 
         if allowed && !was_allowlisted {
+            // Enforce the configured (or default) allowlist size cap before adding.
+            let limit: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AllowlistLimit)
+                .unwrap_or(DEFAULT_ALLOWLIST_LIMIT);
+            ensure(
+                &env,
+                index.len() < limit,
+                EscrowError::AllowlistCapacityReached,
+            );
             index.push_back(investor.clone());
         } else if !allowed && was_allowlisted {
             // Remove from index by position
@@ -4437,6 +4517,10 @@ impl LiquifactEscrow {
                 }
             }
         }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::InvestorAllowlisted(investor.clone()), &allowed);
 
         env.storage()
             .instance()
@@ -4457,6 +4541,10 @@ impl LiquifactEscrow {
     /// once. The call is rejected for empty vectors or vectors longer than
     /// `MAX_INVESTOR_ALLOWLIST_BATCH` to keep storage and CPU bounded.
     ///
+    /// When `allowed` is `true` the total allowlisted count (after applying the batch)
+    /// must not exceed the configured (or default) allowlist limit; otherwise the entire
+    /// batch is rejected with [`EscrowError::AllowlistCapacityReached`].
+    ///
     /// Invariant: the end state and emitted events are identical to calling
     /// `set_investor_allowlisted` individually for each element in `investors`.
     ///
@@ -4474,12 +4562,18 @@ impl LiquifactEscrow {
             EscrowError::InvestorBatchTooLarge,
         );
 
-        // Load index once for the entire batch
+        // Load index and limit once for the entire batch.
         let mut index: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::AllowlistIndex)
             .unwrap_or_else(|| Vec::new(&env));
+
+        let limit: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistLimit)
+            .unwrap_or(DEFAULT_ALLOWLIST_LIMIT);
 
         for i in 0..n {
             let inv = investors.get(i).unwrap();
@@ -4490,11 +4584,13 @@ impl LiquifactEscrow {
                 .get(&DataKey::InvestorAllowlisted(inv.clone()))
                 .unwrap_or(false);
 
-            env.storage()
-                .persistent()
-                .set(&DataKey::InvestorAllowlisted(inv.clone()), &allowed);
-
             if allowed && !was_allowlisted {
+                // Enforce the allowlist size cap before adding.
+                ensure(
+                    &env,
+                    index.len() < limit,
+                    EscrowError::AllowlistCapacityReached,
+                );
                 index.push_back(inv.clone());
             } else if !allowed && was_allowlisted {
                 for j in 0..index.len() {
@@ -4505,6 +4601,10 @@ impl LiquifactEscrow {
                 }
             }
 
+            env.storage()
+                .persistent()
+                .set(&DataKey::InvestorAllowlisted(inv.clone()), &allowed);
+
             InvestorAllowlistChanged {
                 name: symbol_short!("al_set"),
                 invoice_id: escrow.invoice_id.clone(),
@@ -4513,6 +4613,11 @@ impl LiquifactEscrow {
             }
             .publish(&env);
         }
+
+        // Persist updated index.
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistIndex, &index);
     }
 
     pub fn is_investor_allowlisted(env: Env, investor: Address) -> bool {
