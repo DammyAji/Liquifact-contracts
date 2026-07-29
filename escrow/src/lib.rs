@@ -287,6 +287,16 @@ pub const MAX_SETTLEMENT_LIMIT: u32 = 100;
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
+/// Default number of entries processed per call when no explicit
+/// [`LiquifactEscrow::set_settlement_limit`] has been configured.
+pub const DEFAULT_SETTLEMENT_LIMIT: u32 = 50;
+
+/// Lower bound accepted by [`LiquifactEscrow::set_settlement_limit`].
+pub const MIN_SETTLEMENT_LIMIT: u32 = 1;
+
+/// Upper bound accepted by [`LiquifactEscrow::set_settlement_limit`].
+pub const MAX_SETTLEMENT_LIMIT: u32 = 100;
+
 /// Upper bound on [`LiquifactEscrow::sweep_terminal_dust`] per call (base units of the funding token).
 ///
 /// Caps blast radius if instrumentation mis-estimates â€œdustâ€; tune per asset decimals off-chain.
@@ -452,10 +462,6 @@ pub enum EscrowError {
     CollateralAssetEmpty = 61,
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a timestamp before the stored record.
     CollateralTimestampBackwards = 62,
-    /// [`LiquifactEscrow::record_sme_collateral_commitment_batch`] received an empty items vector.
-    CollateralBatchEmpty = 63,
-    /// [`LiquifactEscrow::record_sme_collateral_commitment_batch`] exceeded [`MAX_COLLATERAL_BATCH`].
-    CollateralBatchTooLarge = 64,
 
     /// [`LiquifactEscrow::set_investors_allowlisted`] received an empty batch.
     InvestorBatchEmpty = 70,
@@ -861,52 +867,6 @@ pub(crate) fn guard_not_paused(env: &Env, error: EscrowError) {
 #[inline(always)]
 pub(crate) fn guard_not_legal_hold(env: &Env, error: EscrowError) {
     ensure(env, !LiquifactEscrow::legal_hold_active(env), error);
-}
-
-/// Predicate: `true` when the lightweight **operational pause** is active.
-///
-/// Reads [`DataKey::Paused`] and checks if it has auto-expired (if configured).
-/// Returns `false` if the pause has expired or if not paused.
-///
-/// Used internally by entrypoints to gate `fund`, `settle`, `withdraw`, and
-/// `claim_investor_payout` when an operational pause is active.
-#[allow(dead_code)] // reserved for future read-API surfacing; entrypoints cover pause checks directly today.
-pub(crate) fn paused_active(env: &Env) -> bool {
-    let paused: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false);
-    if !paused {
-        return false;
-    }
-
-    // Check auto-expiry
-    let paused_at: u64 = match env.storage().instance().get(&DataKey::PausedAt) {
-        Some(at) => at,
-        None => return false, // Paused=true but PausedAt missing - inconsistent, fail safe
-    };
-
-    let max_duration: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::PauseMaxDuration)
-        .unwrap_or(0);
-
-    if max_duration == 0 {
-        // No auto-expiry configured - legacy behavior
-        return true;
-    }
-
-    let expiry = match paused_at.checked_add(max_duration) {
-        Some(exp) => exp,
-        None => {
-            // Overflow - fail safe by treating as still active
-            return true;
-        }
-    };
-
-    env.ledger().timestamp() < expiry
 }
 
 /// Predicate: `true` when `status` is one of the **terminal** escrow states
@@ -2783,6 +2743,25 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Shared clamping logic for every paginated read view.
+    ///
+    /// Given a requested `start`/`limit` over a collection of length `len`, returns the
+    /// inclusive-exclusive `[from, to)` window to iterate, or `None` when the page is
+    /// necessarily empty (`len == 0`, `start >= len`, or `limit == 0`).
+    ///
+    /// `limit` is clamped to `ceiling` before the window is computed, and the window's upper
+    /// bound never exceeds `len`. Uses `saturating_add` so a `start` near `u32::MAX` cannot
+    /// overflow.
+    #[allow(dead_code)]
+    fn paginate_window(start: u32, limit: u32, ceiling: u32, len: u32) -> Option<(u32, u32)> {
+        if len == 0 || start >= len || limit == 0 {
+            return None;
+        }
+        let actual_limit = limit.min(ceiling);
+        let end = start.saturating_add(actual_limit).min(len);
+        Some((start, end))
+    }
+
     /// Load the attestation append-log from instance storage.
     ///
     /// Consolidates the repeated pattern of reading `DataKey::AttestationAppendLog` with an
@@ -3213,32 +3192,6 @@ impl LiquifactEscrow {
             .get(&DataKey::AttestationRevoked(index))
             .unwrap_or(false);
         Some(AttestationDigestInfo { digest, revoked })
-    }
-
-    // --- Collateral storage key helpers ---
-    //
-    // All reads and writes to `DataKey::SmeCollateralPledge` go through these three
-    // helpers so the key is referenced in exactly one place. If the key ever needs to
-    // be renamed or moved to a different storage tier, only these three functions change.
-
-    /// Read the SME collateral pledge from instance storage.
-    /// Returns `None` when no commitment has been recorded.
-    fn collateral_pledge_get(env: &Env) -> Option<SmeCollateralCommitment> {
-        env.storage().instance().get(&DataKey::SmeCollateralPledge)
-    }
-    /// Persist a new (or replacement) SME collateral commitment to instance storage.
-    #[allow(dead_code)] // reserved for future SME-collateral read-API; cleanup after conflict resolution left this unreferenced.
-    fn collateral_pledge_set(env: &Env, commitment: &SmeCollateralCommitment) {
-        env.storage()
-            .instance()
-            .set(&DataKey::SmeCollateralPledge, commitment);
-    }
-    /// Remove the SME collateral pledge entry from instance storage.
-    #[allow(dead_code)] // reserved for future SME-collateral read-API; cleanup after conflict resolution left this unreferenced.
-    fn collateral_pledge_remove(env: &Env) {
-        env.storage()
-            .instance()
-            .remove(&DataKey::SmeCollateralPledge);
     }
 
     // --- Persistent per-investor storage helpers ---
@@ -4289,14 +4242,12 @@ impl LiquifactEscrow {
     pub fn set_paused(env: Env, active: bool) {
         let escrow = Self::load_escrow_require_admin(&env);
 
-        let toggle_limit: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PauseToggleLimit)
-            .unwrap_or(DEFAULT_PAUSE_TOGGLE_LIMIT);
-        let now = env.ledger().timestamp();
-        let (window_start, window_count): (u64, u32) = if toggle_limit > 0 {
-            let window_secs: u64 = env
+        env.storage().instance().set(&DataKey::Paused, &active);
+
+        // Handle pause rate limiting if configured
+        let (limit, window_secs) = Self::get_pause_rate_limit(env.clone());
+        if limit > 0 && window_secs > 0 {
+            let window_start: u64 = env
                 .storage()
                 .instance()
                 .get(&DataKey::PauseToggleWindowSecs)
