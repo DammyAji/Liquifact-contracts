@@ -66,6 +66,7 @@ mod cap_validation;
 mod coverage;
 mod external_calls;
 mod external_calls_mocked;
+mod fee_split_proptest;
 mod fees;
 mod funding;
 mod funding_state_view;
