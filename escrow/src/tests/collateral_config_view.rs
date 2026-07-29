@@ -1,8 +1,6 @@
 use super::super::{
-    CollateralConfig, CollateralCommitmentSnapshot, DataKey, EscrowError, LiquifactEscrow,
-    LiquifactEscrowClient,
+    CollateralCommitmentSnapshot, CollateralConfig, LiquifactEscrow, LiquifactEscrowClient,
 };
-use super::assert_contract_error;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 

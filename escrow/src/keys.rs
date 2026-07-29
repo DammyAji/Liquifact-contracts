@@ -1,10 +1,10 @@
-//! Centralised storage-key definitions for the LiquiFact escrow contract.
+﻿//! Centralised storage-key definitions for the LiquiFact escrow contract.
 //!
 //! # Purpose
 //!
 //! All persistent and instance-storage keys are defined here as variants of [`DataKey`].
 //! Typed constructor functions are provided for every key family so that call sites never
-//! build a [`DataKey`] inline — reducing the risk of typos, discriminant drift between
+//! build a [`DataKey`] inline ΓÇö reducing the risk of typos, discriminant drift between
 //! modules, and copy-paste errors when a new key needs to be added.
 //!
 //! ## Collateral keys
@@ -59,26 +59,26 @@ pub enum DataKey {
     /// Read with [`LiquifactEscrow::get_version`]. Never delete or rename this variant.
     Version,
     /// Per-investor contributed principal recorded during [`LiquifactEscrow::fund`].
-    /// **Persistent** storage. Absent ⇒ `0`. One entry per investor address.
+    /// **Persistent** storage. Absent ΓçÆ `0`. One entry per investor address.
     InvestorContribution(Address),
     /// When true, compliance/legal hold blocks payouts and settlement finalization.
-    /// Absent ⇒ `false` (no hold). Toggled by admin via [`LiquifactEscrow::set_legal_hold`].
+    /// Absent ΓçÆ `false` (no hold). Toggled by admin via [`LiquifactEscrow::set_legal_hold`].
     LegalHold,
     /// Optional minimum ledger timestamp when `LegalHold` may be cleared after a
     /// [`LiquifactEscrow::request_clear_legal_hold`] call.
-    /// Absent ⇒ no clear request is pending.
+    /// Absent ΓçÆ no clear request is pending.
     LegalHoldClearableAt,
     /// Configured minimum delay between [`LiquifactEscrow::request_clear_legal_hold`] and
-    /// [`LiquifactEscrow::set_legal_hold(env, false)`]. Absent ⇒ `0`.
+    /// [`LiquifactEscrow::set_legal_hold(env, false)`]. Absent ΓçÆ `0`.
     LegalHoldClearDelay,
-    /// Optional SME collateral commitment metadata (record-only — not an on-chain asset lock).
+    /// Optional SME collateral commitment metadata (record-only ΓÇö not an on-chain asset lock).
     /// Absent when no commitment has been recorded. Replaceable by the SME.
     ///
     /// **Do not construct this variant directly.** Use [`collateral_pledge_key`] to get the
     /// canonical key so all collateral call sites share a single construction point.
     SmeCollateralPledge,
     /// Set to `true` when an investor has exercised a claim after settlement.
-    /// **Persistent** storage. Absent ⇒ `false`. Written once; a second claim returns without re-emitting.
+    /// **Persistent** storage. Absent ΓçÆ `false`. Written once; a second claim returns without re-emitting.
     InvestorClaimed(Address),
     /// SEP-41 funding asset for this invoice instance; set once in [`LiquifactEscrow::init`].
     /// Immutable after init.
@@ -87,32 +87,32 @@ pub enum DataKey {
     /// Immutable after init.
     Treasury,
     /// Optional registry contract id for indexers; **hint only**, not authority (see module rustdoc).
-    /// Omitted from storage when unset at init. Absent ⇒ `None`.
+    /// Omitted from storage when unset at init. Absent ΓçÆ `None`.
     RegistryRef,
     /// Immutable tier table when configured at [`LiquifactEscrow::init`]; omitted when tiering is off.
-    /// Absent ⇒ no tiering (base `yield_bps` applies to all investors).
+    /// Absent ΓçÆ no tiering (base `yield_bps` applies to all investors).
     /// **Trust:** values are protocol-supplied at deploy; the contract never mutates this key after init.
     YieldTierTable,
     /// Set once when status first becomes **funded** (1); immutable thereafter (pro-rata denominator).
     /// Absent until the escrow reaches `status == 1`. See [`FundingCloseSnapshot`].
     FundingCloseSnapshot,
     /// Effective annualized yield in bps chosen at this investor's **first** deposit (see tiered yield).
-    /// **Persistent** storage. Absent ⇒ falls back to [`InvoiceEscrow::yield_bps`]. One entry per investor address.
+    /// **Persistent** storage. Absent ΓçÆ falls back to [`InvoiceEscrow::yield_bps`]. One entry per investor address.
     InvestorEffectiveYield(Address),
     /// Minimum [`Env::ledger`] timestamp before [`LiquifactEscrow::claim_investor_payout`] (0 = no extra gate).
-    /// **Persistent** storage. Absent ⇒ `0`. One entry per investor address; set on first deposit.
+    /// **Persistent** storage. Absent ΓçÆ `0`. One entry per investor address; set on first deposit.
     InvestorClaimNotBefore(Address),
     /// Minimum [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] amount per call (0 = no floor).
     /// Written as `0` even when unconfigured so reads always succeed.
     MinContributionFloor,
     /// When set at [`LiquifactEscrow::init`], caps distinct investor addresses that may contribute.
-    /// Absent ⇒ unlimited. Checked against [`DataKey::UniqueFunderCount`] on each new investor.
+    /// Absent ΓçÆ unlimited. Checked against [`DataKey::UniqueFunderCount`] on each new investor.
     MaxUniqueInvestorsCap,
     /// Optional immutable per-investor cap on total principal credited to a single address.
-    /// Absent ⇒ unlimited. Checked against [`DataKey::InvestorContribution`] on every deposit.
+    /// Absent ΓçÆ unlimited. Checked against [`DataKey::InvestorContribution`] on every deposit.
     MaxPerInvestorCap,
     /// Proposed successor admin waiting for [`LiquifactEscrow::accept_admin`].
-    /// Absent ⇒ no pending handover. Cleared after successful acceptance.
+    /// Absent ΓçÆ no pending handover. Cleared after successful acceptance.
     PendingAdmin,
     /// Ledger timestamp (seconds) after which [`LiquifactEscrow::accept_admin`] rejects the
     /// pending proposal. Written alongside [`DataKey::PendingAdmin`] on every
@@ -125,10 +125,10 @@ pub enum DataKey {
     /// Absent until [`LiquifactEscrow::bind_primary_attestation_hash`] is called; single-set thereafter.
     PrimaryAttestationHash,
     /// Append-only audit chain of digests (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
-    /// Absent ⇒ empty log. See [`LiquifactEscrow::append_attestation_digest`].
+    /// Absent ΓçÆ empty log. See [`LiquifactEscrow::append_attestation_digest`].
     AttestationAppendLog,
     /// Per-index revocation marker for [`DataKey::AttestationAppendLog`] entries.
-    /// Absent ⇒ not revoked. Written as `true` by [`LiquifactEscrow::revoke_attestation_digest`].
+    /// Absent ΓçÆ not revoked. Written as `true` by [`LiquifactEscrow::revoke_attestation_digest`].
     /// Preserves the original digest for auditability while signalling supersession.
     AttestationRevoked(u32),
     /// When true, only allowlisted addresses may call [`LiquifactEscrow::fund`] or [`LiquifactEscrow::fund_with_commitment`].
@@ -138,45 +138,174 @@ pub enum DataKey {
     /// Index of allowlisted addresses for paginated enumeration.
     AllowlistIndex,
     /// Set to `true` once an investor's principal has been refunded in a cancelled escrow.
-    /// Absent ⇒ `false`. Written once; prevents double-refund.
+    /// Absent ΓçÆ `false`. Written once; prevents double-refund.
     InvestorRefunded(Address),
     /// Running total of principal already returned to investors via [`LiquifactEscrow::refund`].
-    /// Absent ⇒ `0`. Incremented atomically with each successful refund transfer.
+    /// Absent ΓçÆ `0`. Incremented atomically with each successful refund transfer.
     /// Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities:
     /// `outstanding = funded_amount - distributed_principal`.
     DistributedPrincipal,
     /// Configured maximum maturity horizon in seconds from current ledger time.
-    /// Absent ⇒ falls back to [`DEFAULT_MATURITY_MAX_HORIZON_SECS`].
+    /// Absent ΓçÆ falls back to [`DEFAULT_MATURITY_MAX_HORIZON_SECS`].
     /// Set at init and updatable via [`LiquifactEscrow::update_maturity_max_horizon`].
     MaturityMaxHorizon,
-    /// Optional funding deadline timestamp; absent ⇒ no deadline.
+    /// Optional funding deadline timestamp; absent ΓçÆ no deadline.
     /// Written by [`LiquifactEscrow::init`] and extended by
     /// [`LiquifactEscrow::extend_funding_deadline`]; checked during [`LiquifactEscrow::fund`].
     FundingDeadline,
     /// Ordered list of all investor addresses; used for pagination via [`LiquifactEscrow::get_investors`].
-    /// Absent ⇒ empty list (no investors yet funded).
+    /// Absent ΓçÆ empty list (no investors yet funded).
     InvestorIndex,
     /// Ledger timestamp recorded when [`LiquifactEscrow::settle`] transitions status to 2.
-    /// Absent ⇒ not yet settled, or legacy instance. Read via [`LiquifactEscrow::get_settled_at`].
+    /// Absent ΓçÆ not yet settled, or legacy instance. Read via [`LiquifactEscrow::get_settled_at`].
     SettledAt,
     /// When true, a lightweight **operational pause** blocks risk-bearing entrypoints
     /// (`fund`, `settle`, `withdraw`, `claim_investor_payout`) for incident response.
-    /// Absent ⇒ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
+    /// Absent ΓçÆ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
     ///
     /// Orthogonal to [`DataKey::LegalHold`]: the pause has **no** compliance semantics and
-    /// **no** two-phase clear delay — it is a single-call admin switch for incidents such as a
+    /// **no** two-phase clear delay ΓÇö it is a single-call admin switch for incidents such as a
     /// suspected token bug. Either flag independently blocks the gated entrypoints.
     Paused,
+    /// Ordered list of pause activation ledger timestamps; used for pagination via [`LiquifactEscrow::get_pause_records`].
+    /// Absent => empty list (no pauses ever). Each entry is a ledger timestamp (seconds) when `set_paused(true)` was called.
+    /// Written on every `set_paused(true)` call; entries are never removed (append-only).
+    PauseRecordIndex,
+    /// Pause configuration: maximum duration in seconds before auto-expiry. 0 = no auto-expiry (legacy behavior).
+    /// Absent => 0 (no auto-expiry). Set via [`LiquifactEscrow::set_pause_max_duration`].
+    PauseMaxDuration,
+    /// Pause configuration: rate limit - maximum number of toggle calls allowed within the window.
+    /// Absent => 0 (rate limit disabled). Set via [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleLimit,
+    /// Pause configuration: rate limit - time window in seconds for counting toggles.
+    /// Absent => 0 (rate limit disabled). Set via [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleWindowSecs,
+    /// Pause configuration: start of the current rate-limit window (ledger timestamp).
+    /// Absent => unset (rate limit never triggered). Reset on reconfiguration or window expiry.
+    PauseToggleWindowStart,
+    /// Pause configuration: count of toggles within the current window.
+    /// Absent => 0 (reset on window start or reconfiguration).
+    PauseToggleCountInWindow,
+    /// Timestamp when the current pause was activated (ledger seconds).
+    /// Absent => never paused or last pause cleared. Overwritten on each `set_paused(true)` call.
+    PausedAt,
     /// Immutable protocol fee in basis points (0..=10_000) applied to the SME disbursement
     /// at [`LiquifactEscrow::withdraw`]; set once in [`LiquifactEscrow::init`].
     /// Written as `0` even when unconfigured so reads always succeed (`.unwrap_or(0)`).
     /// Stored as `i64` to match the [`InvoiceEscrow::yield_bps`] basis-point convention.
-    /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
+    /// **Additive key (ADR-007):** absent on instances predating this key ΓçÆ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
 }
 
-    /// `SmeCollateralPledge` must not match any other unit-type variant — this is the key
+// ---------------------------------------------------------------------------
+// Collateral key constructors
+// ---------------------------------------------------------------------------
+
+/// Return the canonical storage key for the SME collateral pledge.
+///
+/// All three collateral entrypoints ΓÇö `record_sme_collateral_commitment`,
+/// `clear_sme_collateral_commitment`, and `get_sme_collateral_commitment` ΓÇö must call this
+/// function instead of constructing `DataKey::SmeCollateralPledge` inline. This single
+/// construction point guarantees that a future rename or variant-split cannot silently
+/// diverge across call sites.
+///
+/// # Storage tier
+///
+/// The returned key lives in **instance** storage (shared TTL with the contract instance).
+/// Callers are responsible for using `env.storage().instance()`.
+///
+/// # Example
+///
+/// ```ignore
+/// use crate::keys::collateral_pledge_key;
+///
+/// let key = collateral_pledge_key();
+/// env.storage().instance().set(&key, &commitment);
+/// ```
+#[inline(always)]
+pub fn collateral_pledge_key() -> DataKey {
+    DataKey::SmeCollateralPledge
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ΓöÇΓöÇ collateral_pledge_key ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    /// The constructor must return the `SmeCollateralPledge` variant ΓÇö verified by a
+    /// `matches!` guard so the test does not depend on a `PartialEq` derive that the
+    /// `#[contracttype]` macro does not generate for `DataKey`.
+    #[test]
+    fn collateral_pledge_key_returns_sme_collateral_pledge_variant() {
+        let key = collateral_pledge_key();
+        assert!(
+            matches!(key, DataKey::SmeCollateralPledge),
+            "collateral_pledge_key() must return DataKey::SmeCollateralPledge"
+        );
+    }
+
+    /// Calling the constructor twice must produce structurally identical keys ΓÇö callers
+    /// that cache or compare keys between entrypoints (e.g. an indexer that stores the
+    /// discriminant) must see a stable, idempotent value.
+    #[test]
+    fn collateral_pledge_key_is_idempotent() {
+        let k1 = collateral_pledge_key();
+        let k2 = collateral_pledge_key();
+        // Verify both are the same variant via matches! (no PartialEq on DataKey).
+        assert!(matches!(k1, DataKey::SmeCollateralPledge));
+        assert!(matches!(k2, DataKey::SmeCollateralPledge));
+    }
+
+    /// The key must be `Clone`-able (required by Soroban storage APIs that pass keys by
+    /// reference and may need to retain an owned copy).
+    #[test]
+    fn collateral_pledge_key_is_cloneable() {
+        let key = collateral_pledge_key();
+        let cloned = key.clone();
+        assert!(matches!(cloned, DataKey::SmeCollateralPledge));
+    }
+
+    // ΓöÇΓöÇ DataKey variant smoke-tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    //
+    // These tests are not exhaustive variant coverage; they confirm that the
+    // enum compiles correctly and that the unit-type variants are distinguishable
+    // from the tuple variants at runtime via `matches!`.
+
+    /// Unit-type (non-tuple) variants must be constructible and must not match
+    /// each other ΓÇö guards against accidental discriminant collision.
+    #[test]
+    fn unit_type_variants_are_distinct() {
+        // Sample a representative set of unit-type keys.
+        let escrow = DataKey::Escrow;
+        let version = DataKey::Version;
+        let legal_hold = DataKey::LegalHold;
+        let pledge = DataKey::SmeCollateralPledge;
+        let paused = DataKey::Paused;
+        let protocol_fee = DataKey::ProtocolFeeBps;
+
+        assert!(matches!(escrow, DataKey::Escrow));
+        assert!(matches!(version, DataKey::Version));
+        assert!(matches!(legal_hold, DataKey::LegalHold));
+        assert!(matches!(pledge, DataKey::SmeCollateralPledge));
+        assert!(matches!(paused, DataKey::Paused));
+        assert!(matches!(protocol_fee, DataKey::ProtocolFeeBps));
+
+        // Spot-check cross-variant inequality via exhaustive matches.
+        assert!(!matches!(escrow, DataKey::Version));
+        assert!(!matches!(version, DataKey::LegalHold));
+        assert!(!matches!(legal_hold, DataKey::SmeCollateralPledge));
+        assert!(!matches!(pledge, DataKey::Paused));
+        assert!(!matches!(paused, DataKey::ProtocolFeeBps));
+        assert!(!matches!(protocol_fee, DataKey::Escrow));
+    }
+
+    /// `SmeCollateralPledge` must not match any other unit-type variant ΓÇö this is the key
     /// property that prevents silent cross-key reads/writes in the collateral entrypoints.
     #[test]
     fn collateral_pledge_key_does_not_match_other_unit_variants() {

@@ -18,12 +18,14 @@
 )]
 #[allow(unused_imports)]
 use super::{
-    AttestationDigestAppended, AttestationDigestRevoked, AttestationDigestUnrevoked,
-    CollateralRecordedEvt, ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError,
-    EscrowFunded, EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingTargetUpdated,
-    InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient, MaturityMaxHorizonUpdated,
-    MaxUniqueInvestorsCapLowered, PrimaryAttestationBound, RegistryRefRebound, TreasuryDustSwept,
-    YieldTier, YieldTierTableUpdated, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
+    AllowlistEnabledChanged, AllowlistStateChanged, AttestationDigestAppended,
+    AttestationDigestRevoked, AttestationDigestUnrevoked, CollateralConfig, CollateralRecordedEvt,
+    ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError, EscrowFunded,
+    EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingTargetUpdated,
+    InvestorAllowlistChanged, InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient,
+    MaturityMaxHorizonUpdated, MaxUniqueInvestorsCapLowered, PrimaryAttestationBound,
+    RegistryRefRebound, TreasuryDustSwept, YieldTier, YieldTierTableUpdated,
+    MAX_ATTESTATION_APPEND_BATCH, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
     MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
@@ -75,7 +77,13 @@ mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod settlement_limit;
+mod yield_tier_overflow;
+
+mod allowlist_event_payloads;
+mod collateral_config_view;
 mod yield_tier_setter;
+mod yield_tier_struct;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
