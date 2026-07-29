@@ -6231,6 +6231,48 @@ pub fn settle(env: Env) -> InvoiceEscrow {
     escrow
 }
 
+/// Batch settlement entrypoint: settles multiple sibling escrow contract instances
+/// (separate deployments of this same contract) in a single call.
+///
+/// Every address in `escrows` is checked with [`LiquifactEscrow::is_settleable`] — the
+/// same single-source-of-truth gate [`LiquifactEscrow::settle`] applies — before any of
+/// them are mutated. A single non-settleable entry rejects the entire batch atomically
+/// instead of partially settling a prefix and leaving the rest untouched.
+///
+/// # Errors
+/// - [`EscrowError::SettlementBatchEmpty`] if `escrows` is empty.
+/// - [`EscrowError::SettlementBatchTooLarge`] if `escrows.len() > MAX_SETTLE_BATCH`.
+/// - [`EscrowError::SettlementNotFunded`] if any entry is not currently settleable.
+pub fn settle_batch(env: Env, escrows: Vec<Address>) -> Vec<InvoiceEscrow> {
+    let n = escrows.len();
+    ensure(&env, n > 0, EscrowError::SettlementBatchEmpty);
+    ensure(
+        &env,
+        n <= MAX_SETTLE_BATCH,
+        EscrowError::SettlementBatchTooLarge,
+    );
+
+    // Validate every target up front so a single non-settleable entry cannot leave a
+    // prefix of the batch settled while the rest is rejected.
+    for i in 0..n {
+        let addr = escrows.get(i).unwrap();
+        let client = LiquifactEscrowClient::new(&env, &addr);
+        ensure(
+            &env,
+            client.is_settleable(),
+            EscrowError::SettlementNotFunded,
+        );
+    }
+
+    let mut results = Vec::new(&env);
+    for i in 0..n {
+        let addr = escrows.get(i).unwrap();
+        let client = LiquifactEscrowClient::new(&env, &addr);
+        results.push_back(client.settle());
+    }
+    results
+}
+
 /// SME pulls funded liquidity, net of the immutable protocol fee.
 ///
 /// Splits `funded_amount` of the bound funding token into a treasury **fee** and an SME
