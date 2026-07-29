@@ -129,6 +129,8 @@ mod tests {
         assert!(matches!(pledge, DataKey::SmeCollateralPledge));
         assert!(matches!(paused, DataKey::Paused));
         assert!(matches!(protocol_fee, DataKey::ProtocolFeeBps));
+    }
+}
 
 /// Instance-storage immutable SEP-41 funding token address, set once at `init`.
 pub(crate) fn funding_token() -> DataKey {
