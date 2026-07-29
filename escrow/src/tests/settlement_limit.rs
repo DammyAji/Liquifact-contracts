@@ -120,7 +120,7 @@ proptest! {
         init_escrow(&env, &client, &admin, &sme);
 
         let result = client.try_set_settlement_limit(&limit);
-        if limit >= MIN_SETTLEMENT_LIMIT && limit <= MAX_SETTLEMENT_LIMIT {
+        if (MIN_SETTLEMENT_LIMIT..=MAX_SETTLEMENT_LIMIT).contains(&limit) {
             assert!(result.is_ok());
             assert_eq!(client.get_settlement_limit(), limit);
         } else {

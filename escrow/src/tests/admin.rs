@@ -2,7 +2,8 @@ use super::*;
 use crate::{
     AdminAcceptedEvent, AdminProposalCancelled, AdminProposalSuperseded, AdminProposedEvent,
     DeprecatedTransferAdminUsed, EscrowCloseSnapshot, FundingTargetUpdated,
-    MaturityMaxHorizonRaised, RegistryRefRebound, DEFAULT_MATURITY_MAX_HORIZON_SECS,
+    MaturityMaxHorizonRaised, ProtocolFeeUpdated, RegistryRefRebound,
+    DEFAULT_MATURITY_MAX_HORIZON_SECS,
 };
 
 use soroban_sdk::Event;
@@ -167,6 +168,118 @@ fn test_update_maturity_unauthorized() {
     );
     env.mock_auths(&[]);
     client.update_maturity(&2000u64);
+}
+
+#[test]
+fn test_set_protocol_fee_bps_updates_storage_and_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FEE001"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let updated = client.set_protocol_fee_bps(&2500i64);
+    assert_eq!(updated, 2500i64);
+
+    let contract_id = client.address.clone();
+    let all_events = env.events().all();
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        ProtocolFeeUpdated {
+            name: symbol_short!("fee_upd"),
+            invoice_id: client.get_escrow().invoice_id,
+            old_fee_bps: 0i64,
+            new_fee_bps: 2500i64,
+        }
+        .to_xdr(&env, &contract_id)
+    );
+
+    assert_eq!(client.get_protocol_fee_bps(), 2500i64);
+}
+
+#[test]
+fn test_set_protocol_fee_bps_rejects_out_of_range_values() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FEE002"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    assert_contract_error(
+        client.try_set_protocol_fee_bps(&10001i64),
+        EscrowError::ProtocolFeeBpsOutOfRange,
+    );
+    assert_contract_error(
+        client.try_set_protocol_fee_bps(&-1i64),
+        EscrowError::ProtocolFeeBpsOutOfRange,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_set_protocol_fee_bps_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FEE003"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &1000u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    env.mock_auths(&[]);
+    client.set_protocol_fee_bps(&1500i64);
 }
 
 #[test]
