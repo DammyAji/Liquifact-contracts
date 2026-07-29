@@ -3206,7 +3206,8 @@ impl LiquifactEscrow {
         }
 
         let actual_limit = limit.min(MAX_INVESTOR_READ_BATCH);
-        let end = (start + actual_limit).min(len);
+        // SAFETY: use saturating_add to prevent u32 overflow when start is near u32::MAX.
+        let end = start.saturating_add(actual_limit).min(len);
 
         let mut result = Vec::new(&env);
         for i in start..end {
@@ -4353,7 +4354,8 @@ impl LiquifactEscrow {
         }
 
         let actual_limit = limit.min(50);
-        let end = (start + actual_limit).min(len);
+        // SAFETY: use saturating_add to prevent u32 overflow when start is near u32::MAX.
+        let end = start.saturating_add(actual_limit).min(len);
 
         let mut result = Vec::new(&env);
         for i in start..end {
