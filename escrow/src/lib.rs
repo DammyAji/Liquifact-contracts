@@ -1992,13 +1992,21 @@ impl LiquifactEscrow {
         TokenClient::new(&env, &token_addr).balance(&this)
     }
 
-    /// Returns the settlement's deployed version/metadata.
-    /// 
-    /// Returns a sane default (0) before initialization.
-    pub fn get_version(env: Env) -> u32 {
+    /// Returns the collateral subsystem's deployed schema version.
+    ///
+    /// Reads [`DataKey::Version`] — the same schema version stored once by
+    /// [`LiquifactEscrow::init`] — from the perspective of the collateral subsystem.
+    /// This is the authoritative version for integrators querying collateral metadata
+    /// compatibility without requiring access to the generic [`LiquifactEscrow::get_version`]
+    /// entrypoint.
+    ///
+    /// Returns `0` (a sane default) before [`LiquifactEscrow::init`] is called.
+    ///
+    /// **Pure read** — no authorization required, no state mutation.
+    pub fn get_collateral_version(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::SchemaVersion)
+            .get(&DataKey::Version)
             .unwrap_or(0)
     }
 
