@@ -249,9 +249,6 @@ pub const MAX_REFUND_BATCH: u32 = 50;
 /// Upper bound on [`LiquifactEscrow::set_investors_allowlisted`] batch size.
 pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
 
-/// Upper bound on [`LiquifactEscrow::bump_ttl`] batch size.
-pub const MAX_BUMP_TTL_BATCH: u32 = 32;
-
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
@@ -293,6 +290,17 @@ pub const INSTANCE_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 
 /// When [`DataKey::StorageLimit`] is unset, persistent extensions also fall back to
 /// [`INSTANCE_TTL_MIN_EXTENSION_LEDGERS`] (equal to this constant today).
 pub const PERSISTENT_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 1 ledger/sec.
+
+/// Minimum allowed value for [`LiquifactEscrow::set_storage_limit`].
+///
+/// One ledger is the smallest meaningful TTL extension; zero would be a no-op.
+pub const MIN_STORAGE_LIMIT_LEDGERS: u32 = 1;
+
+/// Maximum allowed value for [`LiquifactEscrow::set_storage_limit`].
+///
+/// Approx. 1 year at 1 ledger/sec; generous enough for long-lived escrows
+/// while staying well within Soroban's archival window.
+pub const MAX_STORAGE_LIMIT_LEDGERS: u32 = 31_536_000; // ~365 days
 
 /// Default maximum duration (seconds) an operational pause ([`DataKey::Paused`]) may remain
 /// active before it auto-expires for gate-checking purposes. `0` = unlimited, which reproduces
