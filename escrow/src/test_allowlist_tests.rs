@@ -1018,6 +1018,9 @@ fn allowlist_limit_can_be_updated_multiple_times() {
 /// Setting the limit to 0 (below MIN) is rejected with AllowlistLimitOutOfRange.
 #[test]
 fn allowlist_limit_zero_rejected_with_typed_error() {
+    // TODO: implement test body
+}
+
 #[test]
 fn test_allowlist_metadata_defaults_before_init() {
     let env = Env::default();
