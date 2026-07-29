@@ -4,8 +4,8 @@
 //
 // Each test uses a fresh Env so state cannot leak across cases.
 
-use soroban_sdk::{Address, Env};
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{Address, Env};
 
 // ── paginate_window unit tests ────────────────────────────────────────────────
 //
@@ -120,7 +120,7 @@ fn get_beneficiary_records_empty_returns_empty() {
     env.mock_all_auths();
     // Use `deploy` directly without init to avoid the first beneficiary record
     let client = super::deploy(&env);
-    
+
     let result = client.get_beneficiary_records(&0, &10);
     assert_eq!(result.len(), 0);
 }
@@ -189,7 +189,7 @@ fn get_beneficiary_records_pagination() {
 
     let sme2 = Address::generate(&env);
     let sme3 = Address::generate(&env);
-    
+
     client.rotate_beneficiary(&sme2);
     client.rotate_beneficiary(&sme3);
 

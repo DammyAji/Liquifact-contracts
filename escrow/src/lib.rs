@@ -2172,7 +2172,7 @@ impl LiquifactEscrow {
     /// [`validate_invoice_id_string`]).
     ///
     /// # Yield & Fee Parameter Bounds
-    /// 
+    ///
     /// **Base yield (`yield_bps`):**
     /// - Valid range: `0..=10_000` basis points (0% to 100%)
     /// - `0` = no yield (valid; passive bond)
@@ -2723,7 +2723,12 @@ impl LiquifactEscrow {
     /// # Returns
     /// * `Some((start, end))` — the resolved `[start, end)` window.
     /// * `None`               — the page is empty (out-of-bounds or zero limit).
-    pub(crate) fn paginate_window(start: u32, limit: u32, ceiling: u32, len: u32) -> Option<(u32, u32)> {
+    pub(crate) fn paginate_window(
+        start: u32,
+        limit: u32,
+        ceiling: u32,
+        len: u32,
+    ) -> Option<(u32, u32)> {
         if start >= len || limit == 0 {
             return None;
         }
@@ -5981,12 +5986,7 @@ impl LiquifactEscrow {
     pub fn update_yield_bps(env: Env, new_yield_bps: i64) -> InvoiceEscrow {
         let mut escrow = Self::load_escrow_require_admin(&env);
 
-        guard_status_eq(
-            &env,
-            escrow.status,
-            0,
-            EscrowError::YieldBpsUpdateNotOpen,
-        );
+        guard_status_eq(&env, escrow.status, 0, EscrowError::YieldBpsUpdateNotOpen);
 
         ensure(
             &env,

@@ -3604,8 +3604,8 @@ fn update_yield_bps_fails_when_cancelled() {
 /// `new_yield_bps` fields.
 #[test]
 fn update_yield_bps_emits_event() {
-    use soroban_sdk::testutils::Events as _;
     use crate::YieldBpsUpdatedEvent;
+    use soroban_sdk::testutils::Events as _;
 
     let env = Env::default();
     let (client, _admin) = setup_yield_bps_test(&env, "YLD_EVT_01", 500);
@@ -3633,8 +3633,8 @@ fn update_yield_bps_emits_event() {
 /// sequentially — each event must reference the value at the time of that call.
 #[test]
 fn update_yield_bps_event_carries_correct_old_value_on_second_update() {
-    use soroban_sdk::testutils::Events as _;
     use crate::YieldBpsUpdatedEvent;
+    use soroban_sdk::testutils::Events as _;
 
     let env = Env::default();
     let (client, _admin) = setup_yield_bps_test(&env, "YLD_EVT_02", 300);
