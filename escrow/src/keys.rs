@@ -1,8 +1,6 @@
 //! Centralized constructors for funding-related storage keys.
 //!
-//! Funding logic (`fund`/`fund_with_commitment`/`fund_batch`/`fund_impl`, the cap and
-//! funding-deadline admin setters, `update_funding_target`, `partial_settle`, `unfund`, and
-//! `bump_ttl`) previously constructed the [`DataKey`] variants below inline at each call site.
+//! Funding logic previously constructed the [`DataKey`] variants inline at each call site.
 //! Two call sites agreeing on a key's shape by convention (rather than by construction) is
 //! exactly the drift risk this module removes: every caller now obtains a given key through one
 //! function instead of re-typing `DataKey::Variant(...)`.
@@ -14,7 +12,7 @@
 use crate::DataKey;
 use soroban_sdk::Address;
 
-/// Per-investor persistent principal recorded by `fund` / `fund_with_commitment` / `fund_batch`.
+/// Per-investor persistent principal recorded by `fund`.
 pub(crate) fn investor_contribution(investor: Address) -> DataKey {
     DataKey::InvestorContribution(investor)
 }

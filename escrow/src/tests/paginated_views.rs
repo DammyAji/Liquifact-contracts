@@ -21,7 +21,10 @@ fn paginate_window_empty_collection_returns_none() {
 fn paginate_window_start_past_end_returns_none() {
     // start >= len → None
     assert_eq!(crate::LiquifactEscrow::paginate_window(5, 10, 50, 5), None);
-    assert_eq!(crate::LiquifactEscrow::paginate_window(100, 10, 50, 5), None);
+    assert_eq!(
+        crate::LiquifactEscrow::paginate_window(100, 10, 50, 5),
+        None
+    );
 }
 
 #[test]
@@ -291,9 +294,7 @@ fn get_investors_start_past_end_returns_empty() {
 
 // ── get_allowlisted_investors ─────────────────────────────────────────────────
 
-fn setup_allowlist_escrow(
-    env: &Env,
-) -> (crate::LiquifactEscrowClient<'_>, Address, Address) {
+fn setup_allowlist_escrow(env: &Env) -> (crate::LiquifactEscrowClient<'_>, Address, Address) {
     let client = super::deploy(env);
     let admin = Address::generate(env);
     let sme = Address::generate(env);
@@ -418,9 +419,7 @@ fn get_allowlisted_investors_excludes_revoked_addresses() {
 
 // ── get_revoked_attestation_digests ───────────────────────────────────────────
 
-fn setup_attestation_escrow(
-    env: &Env,
-) -> (crate::LiquifactEscrowClient<'_>, Address) {
+fn setup_attestation_escrow(env: &Env) -> (crate::LiquifactEscrowClient<'_>, Address) {
     let client = super::deploy(env);
     let admin = Address::generate(env);
     let sme = Address::generate(env);

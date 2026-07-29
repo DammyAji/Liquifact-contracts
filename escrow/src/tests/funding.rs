@@ -7699,7 +7699,6 @@ fn test_unfund_event_emitted() {
     assert_eq!(*last, expected.to_xdr(&env, &contract_id));
 }
 
-
 // ─── get_funding_records paginated view tests (issue #790) ─────────────────────
 
 #[test]
@@ -7787,8 +7786,17 @@ fn test_get_funding_records_continuation() {
     assert_eq!(page3.get(0).unwrap().1, amounts[4]);
 
     // Verify all records are accounted for with no duplicates
-    let all_paginated = std::vec::Vec::from([page1, page2, page3].into_iter().flatten().collect::<Vec<_>>());
-    assert_eq!(all_paginated.len(), 5, "pagination should return all records exactly once");
+    let all_paginated = std::vec::Vec::from(
+        [page1, page2, page3]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        all_paginated.len(),
+        5,
+        "pagination should return all records exactly once"
+    );
 }
 
 #[test]
@@ -7904,7 +7912,11 @@ fn test_get_funding_records_multiple_contributions_per_investor() {
 
     // Should appear exactly once in the index with the cumulative contribution
     let records = client.get_funding_records(&0, &50);
-    assert_eq!(records.len(), 1, "investor should appear once even with multiple deposits");
+    assert_eq!(
+        records.len(),
+        1,
+        "investor should appear once even with multiple deposits"
+    );
 
     let record = records.get(0).unwrap();
     assert_eq!(record.0, inv);

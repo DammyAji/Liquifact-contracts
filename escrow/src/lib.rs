@@ -6,17 +6,19 @@ pub mod storage;
 pub mod types;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 use errors::EscrowError;
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env};
 use storage::{
-    get_admin, get_escrow, get_legal_hold, get_paused, get_sme_collateral, get_version, set_admin,
-    set_escrow, set_legal_hold, set_paused, set_sme_collateral, set_version, DataKey,
+    get_admin, get_escrow, get_fees_limit, get_legal_hold, get_paused, get_protocol_fee_bps,
+    get_version, set_admin, set_escrow, set_fees_limit, set_protocol_fee_bps, set_version,
 };
-use types::{EscrowStatus, InvoiceEscrow, SmeCollateralCommitment};
+use types::{EscrowStatus, InvoiceEscrow};
 
 pub const SCHEMA_VERSION: u32 = 6;
+
+pub const INSTANCE_TTL_MIN_EXTENSION_LEDGERS: u32 = 5_000;
 
 #[contract]
 pub struct LiquifactEscrow;
@@ -173,5 +175,38 @@ impl LiquifactEscrow {
 
     pub fn get_version(env: Env) -> Option<u32> {
         get_version(&env)
+    }
+
+    pub fn set_fees_limit(env: Env, limit: i64) -> Result<i64, EscrowError> {
+        let admin = get_admin(&env).ok_or(EscrowError::NotInitialized)?;
+        admin.require_auth();
+
+        if !(0..=10_000).contains(&limit) {
+            return Err(EscrowError::FeesLimitOutOfRange);
+        }
+
+        set_fees_limit(&env, &limit);
+        Ok(limit)
+    }
+
+    pub fn get_fees_limit(env: Env) -> i64 {
+        get_fees_limit(&env)
+    }
+
+    pub fn set_protocol_fee_bps(env: Env, fee_bps: i64) -> Result<i64, EscrowError> {
+        let admin = get_admin(&env).ok_or(EscrowError::NotInitialized)?;
+        admin.require_auth();
+
+        let limit = get_fees_limit(&env);
+        if fee_bps < 0 || fee_bps > limit {
+            return Err(EscrowError::ProtocolFeeBpsOutOfRange);
+        }
+
+        set_protocol_fee_bps(&env, &fee_bps);
+        Ok(fee_bps)
+    }
+
+    pub fn get_protocol_fee_bps(env: Env) -> i64 {
+        get_protocol_fee_bps(&env)
     }
 }
