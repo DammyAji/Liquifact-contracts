@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+﻿#![cfg_attr(not(test), no_std)]
 //! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
@@ -145,24 +145,6 @@ use soroban_sdk::{
     symbol_short, token::TokenClient, Address, BytesN, Env, String, Symbol, Vec,
 };
 
-pub mod external_calls;
-pub mod keys;
-pub use keys::{collateral_pledge_key, DataKey};
-
-/// Current storage schema version written to [`DataKey::Version`] by [`LiquifactEscrow::init`].
-///
-/// # Schema version changelog
-///
-/// | Version | Summary | Upgrade path |
-/// |---------|---------|-------------|
-/// | 1 | Initial schema (`InvoiceEscrow` v1, basic fund / settle) | N/A |
-/// | 2 | Added `InvestorEffectiveYield`, `InvestorClaimNotBefore` | Additive keys â€” no `migrate` call required |
-/// | 3 | Added `FundingCloseSnapshot`, `MinContributionFloor`, `MaxUniqueInvestorsCap`, `UniqueFunderCount` | Additive keys â€” old instances return defaults |
-/// | 4 | Added `PrimaryAttestationHash`, `AttestationAppendLog` | Additive keys â€” no `migrate` call required |
-/// | 5 | Added `YieldTierTable`, `RegistryRef`, `Treasury`; `fund_with_commitment` | **Redeploy required** if `InvoiceEscrow` XDR changed |
-/// | 6 | Per-investor keys moved to **persistent** storage (see ADR-007) | **Redeploy required** â€” no `migrate` path (addresses not enumerable) |
-///
-/// See `docs/OPERATOR_RUNBOOK.md` for the full redeploy-vs-upgrade decision tree.
 pub const SCHEMA_VERSION: u32 = 6;
 // See the schema version contract documentation: [Escrow schema versioning](../docs/escrow-schema-versioning.md)
 
@@ -3497,7 +3479,7 @@ pub fn get_investors(env: Env, start: u32, limit: u32) -> Vec<Address> {
             EscrowError::YieldTierTableInvalid,
         );
 
-        // Collect base index then append all digests.
+        // Append all digests.
         let base_idx = log.len();
         for i in 0..n {
             let d = digests.get(i).unwrap();
@@ -3729,7 +3711,34 @@ pub fn get_investors(env: Env, start: u32, limit: u32) -> Vec<Address> {
     /// Retrieve the currently recorded SME collateral commitment metadata from storage.
     /// Returns `None` if no commitment has been recorded yet.
     pub fn get_sme_collateral_commitment(env: Env) -> Option<SmeCollateralCommitment> {
-        env.storage().instance().get(&collateral_pledge_key())
+        Self::collateral_pledge_get(&env)
+    }
+
+    /// Retrieve the admin-configured collateral limit.
+    pub fn get_collateral_limit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CollateralLimit)
+            .unwrap_or(MAX_INVOICE_AMOUNT)
+    }
+
+    /// Read-only snapshot of the collateral subsystem: admin limit + current SME
+    /// commitment. Returns sensible defaults (max limit, no commitment) before
+    /// `init` is called.
+    pub fn get_collateral_config(env: Env) -> CollateralConfig {
+        let collateral_limit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralLimit)
+            .unwrap_or(MAX_INVOICE_AMOUNT);
+        let sme_commitment = match Self::collateral_pledge_get(&env) {
+            Some(c) => CollateralCommitmentSnapshot::Some(c),
+            None => CollateralCommitmentSnapshot::None,
+        };
+        CollateralConfig {
+            collateral_limit,
+            sme_commitment,
+        }
     }
 
     /// Admin-only setter that updates the collateral ceiling enforced by
@@ -3780,15 +3789,12 @@ pub fn get_investors(env: Env, start: u32, limit: u32) -> Vec<Address> {
     /// 2. `require_auth` on the SME address (via `load_escrow_require_sme`).
     /// 3. Remove storage entry and emit [`CollateralClearedEvt`].
     pub fn clear_sme_collateral_commitment(env: Env) {
-        let commitment: SmeCollateralCommitment = env
-            .storage()
-            .instance()
-            .get(&collateral_pledge_key())
+        let commitment: SmeCollateralCommitment = Self::collateral_pledge_get(&env)
             .unwrap_or_else(|| fail(&env, EscrowError::NoCollateralToClear));
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage().instance().remove(&collateral_pledge_key());
+        Self::collateral_pledge_remove(&env);
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
@@ -4308,8 +4314,7 @@ pub fn set_paused(env: Env, active: bool) {
         let escrow = Self::load_escrow_require_sme(&env);
 
         let now = env.ledger().timestamp();
-        let prior: Option<SmeCollateralCommitment> =
-            env.storage().instance().get(&collateral_pledge_key());
+        let prior: Option<SmeCollateralCommitment> = Self::collateral_pledge_get(&env);
         let prior_amount = prior.as_ref().map(|c| c.amount).unwrap_or(0);
 
         if let Some(ref existing) = prior {
@@ -4325,9 +4330,7 @@ pub fn set_paused(env: Env, active: bool) {
             amount,
             recorded_at: now,
         };
-        env.storage()
-            .instance()
-            .set(&collateral_pledge_key(), &commitment);
+        Self::collateral_pledge_set(&env, &commitment);
 
         CollateralRecordedEvt {
             name: symbol_short!("coll_rec"),
