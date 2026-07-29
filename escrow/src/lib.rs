@@ -98,6 +98,8 @@ pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
 /// Upper bound on pause record read page size.
 pub const MAX_PAUSE_READ_PAGE: u32 = 50;
+/// Maximum number of beneficiary records returned by a single paginated read.
+pub const MAX_BENEFICIARY_READ_PAGE: u32 = 50;
 
 /// Minimum pause max duration (seconds) for auto-expiry.
 pub const MIN_PAUSE_MAX_DURATION_SECS: u64 = 300;
@@ -952,6 +954,8 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent ⇒ [`DEFAULT_SETTLEMENT_LIMIT`]. Updatable via
     /// [`LiquifactEscrow::set_settlement_limit`].
     SettlementLimit,
+    /// Ordered list of beneficiary addresses and rotation timestamps; used for pagination via [`LiquifactEscrow::get_beneficiary_records`].
+    BeneficiaryRecordIndex,
 }
 
 // --- Data types ---
@@ -1718,6 +1722,14 @@ pub struct InvestorRefundedEvt {
 
 /// Emitted after a successful [`LiquifactEscrow::unfund`] call.
 ///
+/// A snapshot of the beneficiary (SME) address at a given time.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiaryRecord {
+    pub sme_address: Address,
+    pub recorded_at: u64,
+}
+
 /// The investor partially or fully exits their principal position while the escrow
 /// remains open (status 0). Carries the withdrawal amount, the investor's remaining
 /// contribution, the escrow's updated `funded_amount`, and the ledger timestamp.
@@ -2300,6 +2312,15 @@ impl LiquifactEscrow {
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
+        let mut ben_idx = soroban_sdk::Vec::new(&env);
+        ben_idx.push_back(BeneficiaryRecord {
+            sme_address: sme_address.clone(),
+            recorded_at: env.ledger().timestamp(),
+        });
+        env.storage()
+            .instance()
+            .set(&beneficiary_record_index(), &ben_idx);
+
         let has_maturity_lock = maturity != 0;
         EscrowInitialized {
             name: symbol_short!("escrow_ii"),
@@ -2601,6 +2622,19 @@ impl LiquifactEscrow {
         escrow.sme_address = new_sme_address.clone();
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
+        let mut ben_idx: soroban_sdk::Vec<BeneficiaryRecord> = env
+            .storage()
+            .instance()
+            .get(&beneficiary_record_index())
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        ben_idx.push_back(BeneficiaryRecord {
+            sme_address: new_sme_address.clone(),
+            recorded_at: env.ledger().timestamp(),
+        });
+        env.storage()
+            .instance()
+            .set(&beneficiary_record_index(), &ben_idx);
+
         BeneficiaryRotated {
             name: symbol_short!("ben_rot"),
             invoice_id: escrow.invoice_id.clone(),
@@ -2665,6 +2699,37 @@ impl LiquifactEscrow {
         let actual_limit = limit.min(ceiling);
         let end = start.saturating_add(actual_limit).min(len);
         Some((start, end))
+    }
+
+    /// Returns a paginated list of [`BeneficiaryRecord`] entries representing the beneficiary rotation history.
+    ///
+    /// The returned list includes the initial beneficiary (if initialization recorded it) and
+    /// any subsequent addresses set via [`LiquifactEscrow::rotate_beneficiary`].
+    ///
+    /// # Pagination
+    /// * `start` - The zero-based index of the first record to return.
+    /// * `limit` - The maximum number of records to return (capped at [`MAX_BENEFICIARY_READ_PAGE`]).
+    pub fn get_beneficiary_records(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<BeneficiaryRecord> {
+        let index: soroban_sdk::Vec<BeneficiaryRecord> = env
+            .storage()
+            .instance()
+            .get(&beneficiary_record_index())
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        match Self::paginate_window(start, limit, MAX_BENEFICIARY_READ_PAGE, index.len()) {
+            Some((s, e)) => {
+                let mut slice = soroban_sdk::Vec::new(&env);
+                for i in s..e {
+                    slice.push_back(index.get(i).unwrap());
+                }
+                slice
+            }
+            None => soroban_sdk::Vec::new(&env),
+        }
     }
 
     /// Load the attestation append-log from instance storage.

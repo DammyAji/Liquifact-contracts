@@ -74,3 +74,9 @@ pub(crate) fn funding_token() -> DataKey {
     DataKey::FundingToken
 }
 
+/// Instance-storage ordered list of beneficiary records backing paginated enumeration.
+pub(crate) fn beneficiary_record_index() -> DataKey {
+    DataKey::BeneficiaryRecordIndex
+}
+
+

@@ -112,6 +112,99 @@ fn do_init(
     );
 }
 
+// ── get_beneficiary_records ──────────────────────────────────────────────────
+
+#[test]
+fn get_beneficiary_records_empty_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    // Use `deploy` directly without init to avoid the first beneficiary record
+    let client = super::deploy(&env);
+    
+    let result = client.get_beneficiary_records(&0, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn get_beneficiary_records_init_creates_first_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = super::setup(&env);
+    do_init(
+        &env,
+        &client,
+        &admin,
+        &sme,
+        &Address::generate(&env),
+        &Address::generate(&env),
+    );
+    let result = client.get_beneficiary_records(&0, &10);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(0).unwrap().sme_address, sme);
+}
+
+#[test]
+fn get_beneficiary_records_multiple_rotations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = super::setup(&env);
+    do_init(
+        &env,
+        &client,
+        &admin,
+        &sme,
+        &Address::generate(&env),
+        &Address::generate(&env),
+    );
+
+    let sme2 = Address::generate(&env);
+    let sme3 = Address::generate(&env);
+    let sme4 = Address::generate(&env);
+
+    client.rotate_beneficiary(&sme2);
+    client.rotate_beneficiary(&sme3);
+    client.rotate_beneficiary(&sme4);
+
+    let result = client.get_beneficiary_records(&0, &10);
+    assert_eq!(result.len(), 4);
+    assert_eq!(result.get(0).unwrap().sme_address, sme);
+    assert_eq!(result.get(1).unwrap().sme_address, sme2);
+    assert_eq!(result.get(2).unwrap().sme_address, sme3);
+    assert_eq!(result.get(3).unwrap().sme_address, sme4);
+}
+
+#[test]
+fn get_beneficiary_records_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = super::setup(&env);
+    do_init(
+        &env,
+        &client,
+        &admin,
+        &sme,
+        &Address::generate(&env),
+        &Address::generate(&env),
+    );
+
+    let sme2 = Address::generate(&env);
+    let sme3 = Address::generate(&env);
+    
+    client.rotate_beneficiary(&sme2);
+    client.rotate_beneficiary(&sme3);
+
+    // Page 1 (limit 2)
+    let p1 = client.get_beneficiary_records(&0, &2);
+    assert_eq!(p1.len(), 2);
+    assert_eq!(p1.get(0).unwrap().sme_address, sme);
+    assert_eq!(p1.get(1).unwrap().sme_address, sme2);
+
+    // Page 2 (limit 2)
+    let p2 = client.get_beneficiary_records(&2, &2);
+    assert_eq!(p2.len(), 1);
+    assert_eq!(p2.get(0).unwrap().sme_address, sme3);
+}
+
 // ── get_investors ─────────────────────────────────────────────────────────────
 
 #[test]
