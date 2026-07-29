@@ -4,8 +4,8 @@
 //
 // Each test uses a fresh Env so state cannot leak across cases.
 
-use soroban_sdk::{Address, Env};
-use soroban_sdk::testutils::Address as _;
+use crate::MAX_PAUSE_READ_PAGE;
+use soroban_sdk::{testutils::Address, testutils::Ledger, Address, Env};
 
 // ── paginate_window unit tests ────────────────────────────────────────────────
 //
