@@ -180,6 +180,37 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Admin-configured ceiling on [`LiquifactEscrow::record_sme_collateral_commitment`] `amount`.
+    /// **Additive key (ADR-007):** absent ⇒ [`MAX_INVOICE_AMOUNT`] (no effective limit beyond
+    /// the global invoice-amount ceiling). Updatable via [`LiquifactEscrow::set_collateral_limit`].
+    CollateralLimit,
+    /// Append-only audit log of every accepted [`LiquifactEscrow::record_sme_collateral_commitment`]
+    /// call, in call order. **Additive key (ADR-007):** absent ⇒ empty log. Read (paginated) via
+    /// [`LiquifactEscrow::get_collateral_records`].
+    CollateralRecords,
+    /// Admin-configured ceiling on entries processed per settlement-batch call.
+    /// **Additive key (ADR-007):** absent ⇒ [`DEFAULT_SETTLEMENT_LIMIT`]. Updatable via
+    /// [`LiquifactEscrow::set_settlement_limit`].
+    SettlementLimit,
+    /// Ordered list of pause activation ledger timestamps; used for pagination via
+    /// [`LiquifactEscrow::get_pause_records`]. Append-only — entries are never removed.
+    PauseRecordIndex,
+    /// Pause configuration: maximum duration in seconds before auto-expiry. `0` = no auto-expiry.
+    PauseMaxDuration,
+    /// Pause configuration: rate limit — maximum number of toggle calls allowed within the window.
+    /// `0` ⇒ rate limit disabled.
+    PauseToggleLimit,
+    /// Pause configuration: rate limit — time window in seconds for counting toggles.
+    /// `0` ⇒ rate limit disabled.
+    PauseToggleWindowSecs,
+    /// Pause configuration: start of the current rate-limit window (ledger timestamp).
+    /// Absent ⇒ unset.
+    PauseToggleWindowStart,
+    /// Pause configuration: count of toggles within the current window. Reset on window expiry.
+    PauseToggleCountInWindow,
+    /// Ledger timestamp when the current pause was activated. Overwritten on each
+    /// `set_paused(true)` call; cleared when pause transitions to inactive.
+    PausedAt,
 }
 
 // ---------------------------------------------------------------------------
