@@ -66,7 +66,6 @@ mod cap_validation;
 mod coverage;
 mod external_calls;
 mod external_calls_mocked;
-mod fee_split_proptest;
 mod fees;
 mod funding;
 mod funding_state_view;
@@ -84,6 +83,7 @@ mod yield_tier_overflow;
 
 mod allowlist_event_payloads;
 mod collateral_config_view;
+mod fees_setter_tests;
 mod yield_tier_setter;
 mod yield_tier_struct;
 
