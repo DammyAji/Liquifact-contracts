@@ -241,15 +241,11 @@ pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
-/// Default number of entries processed per call when no explicit
-/// [`LiquifactEscrow::set_settlement_limit`] has been configured.
-pub const DEFAULT_SETTLEMENT_LIMIT: u32 = 50;
-
-/// Lower bound accepted by [`LiquifactEscrow::set_settlement_limit`].
-pub const MIN_SETTLEMENT_LIMIT: u32 = 1;
-
-/// Upper bound accepted by [`LiquifactEscrow::set_settlement_limit`].
-pub const MAX_SETTLEMENT_LIMIT: u32 = 100;
+/// Upper bound on [`LiquifactEscrow::get_fees_page`] per call.
+///
+/// Callers requesting a larger window will have it silently capped to this value, keeping
+/// per-call storage/CPU bounded without forcing the caller to hard-code the constant.
+pub const MAX_FEE_READ_PAGE: u32 = 20;
 
 /// Upper bound on [`LiquifactEscrow::sweep_terminal_dust`] per call (base units of the funding token).
 ///
@@ -639,6 +635,9 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::get_fees_page`] received a `limit` that exceeds [`MAX_FEE_READ_PAGE`].
+    FeeReadPageTooLarge = 223,
 }
 
 #[inline(always)]
@@ -851,7 +850,164 @@ pub(crate) fn validate_maturity_bounds(env: &Env, maturity: u64, max_horizon: u6
         maturity <= max_allowed,
         EscrowError::MaturityExceedsMaxHorizon,
     );
-}// Storage keys are defined in keys.rs and re-exported via pub use keys::DataKey.
+}
+
+// --- Storage keys ---
+
+#[contracttype]
+#[derive(Clone)]
+/// Storage discriminator for persisted contract state.
+///
+/// Most variants live in **instance** storage (shared TTL with the contract instance, bounded
+/// aggregate size). Per-investor variants
+/// [`InvestorContribution`], [`InvestorEffectiveYield`], [`InvestorClaimNotBefore`], and
+/// [`InvestorClaimed`] use **persistent** storage (independent per-address TTL; see ADR-007 and
+/// `docs/escrow-gas-storage-notes.md`). [`InvestorAllowlisted`] also uses persistent storage.
+///
+/// Optional keys are always read with `.get(...).unwrap_or(default)` so that deployments predating
+/// a key behave as “unset / default” without panicking.
+///
+/// ## Additive-key policy (see ADR-007)
+///
+/// Adding a new variant is **backward-compatible** when the new key is read with
+/// `.unwrap_or(default)` and its absence does not change existing entrypoint semantics.
+/// Renaming a variant, changing its XDR discriminant, or altering the stored type of an
+/// existing key is **breaking** and requires a `migrate` path or a full redeploy.
+///
+/// Derive rationale:
+/// - `Clone`: required because keys are passed by reference into storage APIs and reused
+///   across lookups/sets in the same execution path.
+pub enum DataKey {
+    /// Full escrow snapshot ([`InvoiceEscrow`]); rewritten atomically on every state transition.
+    Escrow,
+    /// Stored schema version; written once by [`LiquifactEscrow::init`] to [`SCHEMA_VERSION`]
+    /// and updated by [`LiquifactEscrow::migrate`] when a migration path is implemented.
+    /// Read with [`LiquifactEscrow::get_version`]. Never delete or rename this variant.
+    Version,
+    /// Per-investor contributed principal recorded during [`LiquifactEscrow::fund`].
+    /// **Persistent** storage. Absent ⇒ `0`. One entry per investor address.
+    InvestorContribution(Address),
+    /// When true, compliance/legal hold blocks payouts and settlement finalization.
+    /// Absent ⇒ `false` (no hold). Toggled by admin via [`LiquifactEscrow::set_legal_hold`].
+    LegalHold,
+    /// Optional minimum ledger timestamp when `LegalHold` may be cleared after a
+    /// [`LiquifactEscrow::request_clear_legal_hold`] call.
+    /// Absent ⇒ no clear request is pending.
+    LegalHoldClearableAt,
+    /// Configured minimum delay between [`LiquifactEscrow::request_clear_legal_hold`] and
+    /// [`LiquifactEscrow::set_legal_hold(env, false)`]. Absent ⇒ `0`.
+    LegalHoldClearDelay,
+    /// Optional SME collateral commitment metadata (record-only — not an on-chain asset lock).
+    /// Absent when no commitment has been recorded. Replaceable by the SME.
+    SmeCollateralPledge,
+    /// Set to `true` when an investor has exercised a claim after settlement.
+    /// **Persistent** storage. Absent ⇒ `false`. Written once; a second claim returns without re-emitting.
+    InvestorClaimed(Address),
+    /// SEP-41 funding asset for this invoice instance; set once in [`LiquifactEscrow::init`].
+    /// Immutable after init.
+    FundingToken,
+    /// Protocol treasury that may receive [`LiquifactEscrow::sweep_terminal_dust`]; set once in init.
+    /// Immutable after init.
+    Treasury,
+    /// Optional registry contract id for indexers; **hint only**, not authority (see module rustdoc).
+    /// Omitted from storage when unset at init. Absent ⇒ `None`.
+    RegistryRef,
+    /// Immutable tier table when configured at [`LiquifactEscrow::init`]; omitted when tiering is off.
+    /// Absent ⇒ no tiering (base `yield_bps` applies to all investors).
+    /// **Trust:** values are protocol-supplied at deploy; the contract never mutates this key after init.
+    YieldTierTable,
+    /// Set once when status first becomes **funded** (1); immutable thereafter (pro-rata denominator).
+    /// Absent until the escrow reaches `status == 1`. See [`FundingCloseSnapshot`].
+    FundingCloseSnapshot,
+    /// Effective annualized yield in bps chosen at this investor’s **first** deposit (see tiered yield).
+    /// **Persistent** storage. Absent ⇒ falls back to [`InvoiceEscrow::yield_bps`]. One entry per investor address.
+    InvestorEffectiveYield(Address),
+    /// Minimum [`Env::ledger`] timestamp before [`LiquifactEscrow::claim_investor_payout`] (0 = no extra gate).
+    /// **Persistent** storage. Absent ⇒ `0`. One entry per investor address; set on first deposit.
+    InvestorClaimNotBefore(Address),
+    /// Minimum [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] amount per call (0 = no floor).
+    /// Written as `0` even when unconfigured so reads always succeed.
+    MinContributionFloor,
+    /// When set at [`LiquifactEscrow::init`], caps distinct investor addresses that may contribute.
+    /// Absent ⇒ unlimited. Checked against [`DataKey::UniqueFunderCount`] on each new investor.
+    MaxUniqueInvestorsCap,
+    /// Optional immutable per-investor cap on total principal credited to a single address.
+    /// Absent ⇒ unlimited. Checked against [`DataKey::InvestorContribution`] on every deposit.
+    MaxPerInvestorCap,
+    /// Proposed successor admin waiting for [`LiquifactEscrow::accept_admin`].
+    /// Absent ⇒ no pending handover. Cleared after successful acceptance.
+    PendingAdmin,
+    /// Ledger timestamp (seconds) after which [`LiquifactEscrow::accept_admin`] rejects the
+    /// pending proposal. Written alongside [`DataKey::PendingAdmin`] on every
+    /// [`LiquifactEscrow::propose_admin`] call; cleared on acceptance or cancellation.
+    PendingAdminExpiry,
+    /// Count of distinct investor addresses that have a non-zero [`DataKey::InvestorContribution`].
+    /// Written as `0` at init; incremented once per new investor in `fund_impl`.
+    UniqueFunderCount,
+    /// Admin-only **single-set** off-chain attestation digest (e.g. SHA-256 of a legal/KYC bundle).
+    /// Absent until [`LiquifactEscrow::bind_primary_attestation_hash`] is called; single-set thereafter.
+    PrimaryAttestationHash,
+    /// Append-only audit chain of digests (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
+    /// Absent ⇒ empty log. See [`LiquifactEscrow::append_attestation_digest`].
+    AttestationAppendLog,
+    /// Per-index revocation marker for [`DataKey::AttestationAppendLog`] entries.
+    /// Absent ⇒ not revoked. Written as `true` by [`LiquifactEscrow::revoke_attestation_digest`].
+    /// Preserves the original digest for auditability while signalling supersession.
+    AttestationRevoked(u32),
+    /// When true, only allowlisted addresses may call [`LiquifactEscrow::fund`] or [`LiquifactEscrow::fund_with_commitment`].
+    AllowlistActive,
+    /// Whether a specific address is permitted to fund when [`DataKey::AllowlistActive`] is true.
+    InvestorAllowlisted(Address),
+    /// Index of allowlisted addresses for paginated enumeration.
+    AllowlistIndex,
+    /// Set to `true` once an investor's principal has been refunded in a cancelled escrow.
+    /// Absent ⇒ `false`. Written once; prevents double-refund.
+    InvestorRefunded(Address),
+    /// Running total of principal already returned to investors via [`LiquifactEscrow::refund`].
+    /// Absent ⇒ `0`. Incremented atomically with each successful refund transfer.
+    /// Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities:
+    /// `outstanding = funded_amount - distributed_principal`.
+    DistributedPrincipal,
+    /// Configured maximum maturity horizon in seconds from current ledger time.
+    /// Absent ⇒ falls back to [`DEFAULT_MATURITY_MAX_HORIZON_SECS`].
+    /// Set at init and updatable via [`LiquifactEscrow::update_maturity_max_horizon`].
+    MaturityMaxHorizon,
+    /// Optional funding deadline timestamp; absent ⇒ no deadline.
+    /// Written by [`LiquifactEscrow::init`] and extended by
+    /// [`LiquifactEscrow::extend_funding_deadline`]; checked during [`LiquifactEscrow::fund`].
+    FundingDeadline,
+    /// Ordered list of all investor addresses; used for pagination via [`LiquifactEscrow::get_investors`].
+    /// Absent ⇒ empty list (no investors yet funded).
+    InvestorIndex,
+    /// Ledger timestamp recorded when [`LiquifactEscrow::settle`] transitions status to 2.
+    /// Absent ⇒ not yet settled, or legacy instance. Read via [`LiquifactEscrow::get_settled_at`].
+    SettledAt,
+    /// When true, a lightweight **operational pause** blocks risk-bearing entrypoints
+    /// (`fund`, `settle`, `withdraw`, `claim_investor_payout`) for incident response.
+    /// Absent ⇒ `false` (not paused). Toggled by admin via [`LiquifactEscrow::set_paused`].
+    ///
+    /// Orthogonal to [`DataKey::LegalHold`]: the pause has **no** compliance semantics and
+    /// **no** two-phase clear delay — it is a single-call admin switch for incidents such as a
+    /// suspected token bug. Either flag independently blocks the gated entrypoints.
+    Paused,
+    /// Immutable protocol fee in basis points (0..=10_000) applied to the SME disbursement
+    /// at [`LiquifactEscrow::withdraw`]; set once in [`LiquifactEscrow::init`].
+    /// Written as `0` even when unconfigured so reads always succeed (`.unwrap_or(0)`).
+    /// Stored as `i64` to match the [`InvoiceEscrow::yield_bps`] basis-point convention.
+    /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
+    /// (no fee), preserving legacy full-principal disbursement semantics.
+    ProtocolFeeBps,
+    /// Append-only ordered list of [`FeeRecord`] entries written by [`LiquifactEscrow::withdraw`]
+    /// whenever a non-zero protocol fee is disbursed.
+    ///
+    /// **Additive key (ADR-007):** absent on instances that have never paid a non-zero fee
+    /// (including all legacy instances predating `protocol_fee_bps`).  Reads return an empty
+    /// list; no migration is required.
+    ///
+    /// Enumerated in insertion order (ascending by ledger timestamp) via
+    /// [`LiquifactEscrow::get_fees_page`].
+    FeeIndex,
+}
 
 // --- Data types ---
 
@@ -912,6 +1068,31 @@ pub struct SmeCollateralCommitment {
 pub struct YieldTier {
     pub min_lock_secs: u64,
     pub yield_bps: i64,
+}
+
+/// Immutable record of a single protocol-fee disbursement appended to [`DataKey::FeeIndex`]
+/// by [`LiquifactEscrow::withdraw`] whenever `fee > 0`.
+///
+/// The index is **append-only**; no record is ever mutated or removed.  Off-chain indexers and
+/// audit tooling can page through the full history with [`LiquifactEscrow::get_fees_page`].
+///
+/// # Fields
+/// - `amount`      — Protocol fee amount (in funding-token base units) routed to treasury.
+/// - `treasury`    — Recipient address of the fee transfer (equals [`DataKey::Treasury`] at
+///                   the time of withdrawal).
+/// - `ledger_timestamp` — [`Env::ledger`] timestamp at which [`LiquifactEscrow::withdraw`] ran.
+///
+/// **Note:** a zero-fee withdrawal (when `protocol_fee_bps == 0`) does **not** append a record.
+/// The first entry in the index corresponds to the first non-zero fee disbursement.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeRecord {
+    /// Fee amount (base units of the funding token) transferred to `treasury`.
+    pub amount: i128,
+    /// Treasury address that received the fee.
+    pub treasury: Address,
+    /// Ledger timestamp at the moment of withdrawal.
+    pub ledger_timestamp: u64,
 }
 
 /// Captured exactly once at the first ledger transition to **funded** so settlement and claims can
@@ -3307,6 +3488,54 @@ impl LiquifactEscrow {
         let actual_limit = limit.min(MAX_INVESTOR_READ_BATCH);
         let end = (start + actual_limit).min(len);
 
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            result.push_back(index.get(i).unwrap());
+        }
+        result
+    }
+
+    /// Returns a paginated slice of protocol-fee disbursement records.
+    ///
+    /// Records are stored in insertion (chronological) order by [`LiquifactEscrow::withdraw`]
+    /// whenever a non-zero protocol fee is transferred to treasury.  The page is a read-only,
+    /// **empty-safe** view: instances that have never paid a fee (including all legacy instances
+    /// that predate `protocol_fee_bps`) return an empty list without error.
+    ///
+    /// # Arguments
+    /// * `start` — 0-based index of the first record to return.
+    /// * `limit` — Maximum records to return; must not exceed [`MAX_FEE_READ_PAGE`].
+    ///             Passing `0` returns an empty list.
+    ///
+    /// # Returns
+    /// A `Vec<FeeRecord>` containing at most `min(limit, MAX_FEE_READ_PAGE)` entries
+    /// beginning at position `start`.  Returns an empty list when `start >= total_records`.
+    ///
+    /// # Errors
+    /// - [`EscrowError::FeeReadPageTooLarge`] — `limit > MAX_FEE_READ_PAGE`.
+    pub fn get_fees_page(env: Env, start: u32, limit: u32) -> Vec<FeeRecord> {
+        ensure(
+            &env,
+            limit <= MAX_FEE_READ_PAGE,
+            EscrowError::FeeReadPageTooLarge,
+        );
+
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let index: Vec<FeeRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = index.len();
+        if start >= len {
+            return Vec::new(&env);
+        }
+
+        let end = (start + limit).min(len);
         let mut result = Vec::new(&env);
         for i in start..end {
             result.push_back(index.get(i).unwrap());
@@ -5760,7 +5989,98 @@ pub fn partial_settle(env: Env, caller: Address) -> InvoiceEscrow {
         };
         env.storage()
             .instance()
-            .set(&DataKey::FundingCloseSnapshot, &snap);
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+        let fee: i128 = amount
+            .checked_mul(fee_bps as i128)
+            .and_then(|scaled| scaled.checked_div(10_000))
+            .unwrap_or_else(|| fail(&env, EscrowError::WithdrawFeeArithmeticOverflow));
+        let net: i128 = amount
+            .checked_sub(fee)
+            .unwrap_or_else(|| fail(&env, EscrowError::WithdrawNetArithmeticUnderflow));
+
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FundingToken)
+            .unwrap_or_else(|| fail(&env, EscrowError::FundingTokenNotSet));
+
+        // Verify the contract holds enough before mutating state. The check uses the gross
+        // `funded_amount` because the contract must fund both the SME payout and the treasury fee.
+        let this = env.current_contract_address();
+        let contract_balance = TokenClient::new(&env, &token_addr).balance(&this);
+        ensure(
+            &env,
+            contract_balance >= amount,
+            EscrowError::InsufficientContractBalance,
+        );
+
+        // State transition and accounting (checks-effects-interactions). `DistributedPrincipal`
+        // advances by the full gross `funded_amount` (net + fee), keeping the liability accounting
+        // consistent regardless of how principal is split.
+        escrow.status = 3;
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+
+        let prev_distributed: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DistributedPrincipal)
+            .unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::DistributedPrincipal,
+            &prev_distributed.saturating_add(amount),
+        );
+
+        // Token transfers with SEP-41 balance-delta verification. The treasury transfer is skipped
+        // when `fee == 0` so the zero-fee path makes exactly one transfer (preserving legacy
+        // behavior and gas profile). `transfer_*` rejects non-positive amounts, so `net` could only
+        // be zero in the degenerate `fee_bps == 10_000` case — guard it the same way.
+        if fee > 0 {
+            let treasury = Self::treasury_or_fail(&env);
+            external_calls::transfer_funding_token_with_balance_checks(
+                &env,
+                &token_addr,
+                &this,
+                &treasury,
+                fee,
+            );
+
+            // Append an immutable FeeRecord to the audit index. Written *after* the transfer
+            // succeeds (checks-effects-interactions) and only when the fee is non-zero to keep
+            // the index free of zero-amount noise. Legacy callers that never set
+            // `protocol_fee_bps` are unaffected because the index stays absent (empty-safe).
+            let mut fee_index: Vec<FeeRecord> = env
+                .storage()
+                .instance()
+                .get(&DataKey::FeeIndex)
+                .unwrap_or_else(|| Vec::new(&env));
+            fee_index.push_back(FeeRecord {
+                amount: fee,
+                treasury: treasury.clone(),
+                ledger_timestamp: env.ledger().timestamp(),
+            });
+            env.storage().instance().set(&DataKey::FeeIndex, &fee_index);
+        }
+        if net > 0 {
+            external_calls::transfer_funding_token_with_balance_checks(
+                &env,
+                &token_addr,
+                &this,
+                &sme,
+                net,
+            );
+        }
+
+        SmeWithdrew {
+            name: symbol_short!("sme_wd"),
+            invoice_id: escrow.invoice_id.clone(),
+            amount: net,
+            recipient: sme,
+            fee,
+        }
+        .publish(&env);
+
+        escrow
     }
 
     env.storage().instance().set(&DataKey::Escrow, &escrow);
