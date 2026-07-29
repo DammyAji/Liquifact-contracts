@@ -84,7 +84,13 @@ mod reconciliation_lifecycle;
 mod settlement;
 mod settlement_config_view;
 mod settlement_limit;
-mod attestation_limit;
+mod yield_tier_overflow;
+
+mod collateral_config_view;
+mod yield_tier_setter;
+mod yield_tier_struct;
+mod yield_tier_config;
+mod allowlist_event_payloads;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
