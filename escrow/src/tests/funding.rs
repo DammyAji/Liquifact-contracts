@@ -7650,8 +7650,8 @@ fn init_for_bounds_test(env: &Env) -> LiquifactEscrowClient<'_> {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -7712,8 +7712,8 @@ fn test_fund_amount_min_accepted() {
         .iter()
         .filter(|e| {
             let candidate = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET / 2,
@@ -7769,24 +7769,24 @@ fn test_fund_amount_max_accepted() {
     // First call: below target — must produce no FundingStateChanged.
     client.fund(&investor, &(TARGET / 2));
     let after_first = env.events().all();
-    let fsc_after_first = after_first.events().iter().any(|e| {
-        let candidate = FundingStateChanged {
-            name: Symbol::new(&env, "fund_st_ch"),
-            invoice_id: invoice_id.clone(),
-            from_status: 0u32,
-            to_status: 1u32,
-            funded_amount: TARGET / 2,
-            funding_target: TARGET,
-            ledger_timestamp: env.ledger().timestamp(),
-            trigger: symbol_short!("fund"),
-        }
-        .to_xdr(&env, &contract_id);
-        *e == candidate
-    });
-    assert!(
-        !fsc_after_first,
-        "no FundingStateChanged after partial fund"
-    );
+    let fsc_after_first = after_first
+        .events()
+        .iter()
+        .any(|e| {
+            let candidate = FundingStateChanged {
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
+                from_status: 0u32,
+                to_status: 1u32,
+                funded_amount: TARGET / 2,
+                funding_target: TARGET,
+                ledger_timestamp: env.ledger().timestamp(),
+                trigger: symbol_short!("fund"),
+            }
+            .to_xdr(&env, &contract_id);
+            *e == candidate
+        });
+    assert!(!fsc_after_first, "no FundingStateChanged after partial fund");
 
     // Second call: reaches target — must produce exactly one FundingStateChanged.
     client.fund(&investor, &(TARGET / 2));
@@ -7796,8 +7796,8 @@ fn test_fund_amount_max_accepted() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -7859,8 +7859,8 @@ fn test_fund_amount_over_max_rejected() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: overshoot,
@@ -7933,8 +7933,8 @@ fn test_fund_amount_zero_rejected() {
         .filter(|e| {
             // Any FundingStateChanged with invoice_id FSC005 is a duplicate.
             let candidate = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET + 1_000i128,
@@ -8000,8 +8000,8 @@ fn test_fund_amount_negative_rejected() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -8071,8 +8071,8 @@ fn test_fund_with_commitment_amount_over_max_rejected() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -8140,8 +8140,8 @@ fn test_fund_with_commitment_amount_max_accepted() {
         .filter(|e| {
             // Any FundingStateChanged event for this invoice is unexpected.
             let candidate_any = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -8209,8 +8209,8 @@ fn test_fund_batch_entry_over_max_rejected() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET / 2,
@@ -8283,8 +8283,8 @@ fn funding_state_changed_emitted_via_fund_batch() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: TARGET,
@@ -8347,8 +8347,8 @@ fn test_fund_batch_entries_at_max_each_accepted() {
         .iter()
         .filter(|e| {
             let expected = FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
-                invoice_id: invoice_id.clone(),
+                name: symbol_short!("fstate_ch"),
+                invoice_id,
                 from_status: 0u32,
                 to_status: 1u32,
                 funded_amount: target,

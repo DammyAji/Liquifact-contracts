@@ -227,7 +227,7 @@ pub const PERSISTENT_TTL_MIN_EXTENSION_LEDGERS: u32 = 60 * 60; // Approx. 1h at 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
-    AllowlistParametersOutOfRange = 302,
+    AllowlistParametersOutOfRange = 308,
     /// [`LiquifactEscrow::init`] rejected a non-positive invoice amount.
     AmountMustBePositive = 1,
     /// [`LiquifactEscrow::init`] rejected `yield_bps` outside `0..=10_000`.
@@ -1494,7 +1494,7 @@ pub struct EscrowPartialSettle {
 ///
 /// # Fields
 ///
-/// - `name`: hardcoded `fund_st_ch` symbol — used by indexers for topic routing.
+/// - `name`: hardcoded `fstate_ch` symbol — used by indexers for topic routing.
 /// - `invoice_id`: escrow invoice identifier.
 /// - `from_status`: always `0` (open); present for forward-compatibility if the event shape
 ///   is reused for other transitions in the future.
@@ -5924,7 +5924,7 @@ impl LiquifactEscrow {
         // the target triggered the 0 → 1 transition.
         if status_transitioned {
             FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id: escrow.invoice_id.clone(),
                 from_status: 0,
                 to_status: 1,
@@ -6712,7 +6712,7 @@ impl LiquifactEscrow {
         // without having to buffer every EscrowFunded event to detect the edge.
         if status_transitioned {
             FundingStateChanged {
-                name: Symbol::new(&env, "fund_st_ch"),
+                name: symbol_short!("fstate_ch"),
                 invoice_id: escrow.invoice_id.clone(),
                 from_status: 0,
                 to_status: 1,
@@ -6782,7 +6782,7 @@ impl LiquifactEscrow {
         // Emit the dedicated funding-state-change event. partial_settle always causes
         // the 0 → 1 transition (guarded by the PartialSettleNotOpen check above).
         FundingStateChanged {
-            name: Symbol::new(&env, "fund_st_ch"),
+            name: symbol_short!("fstate_ch"),
             invoice_id: escrow.invoice_id.clone(),
             from_status: 0,
             to_status: 1,
@@ -8190,7 +8190,7 @@ fn register_mock_token_if_needed(env: &Env, token_addr: &Address) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllowlistParameters {
     pub max_investor_allowlist_batch: u32,
-    pub persistent_ttl_min_ledgers: u32,
+    pub pers_ttl_min_ext_ledgers: u32,
 }
 
 #[contractevent]
@@ -8200,7 +8200,7 @@ pub struct AllowlistParametersUpdated {
     #[topic]
     pub invoice_id: Symbol,
     pub max_investor_allowlist_batch: u32,
-    pub persistent_ttl_min_ledgers: u32,
+    pub pers_ttl_min_ext_ledgers: u32,
 }
 
 #[contractimpl]
@@ -8208,20 +8208,20 @@ impl LiquifactEscrow {
     pub fn set_allowlist_parameters(
         env: Env,
         max_investor_allowlist_batch: u32,
-        persistent_ttl_min_ledgers: u32,
+        pers_ttl_min_ext_ledgers: u32,
     ) {
         let escrow = Self::load_escrow_require_admin(&env);
 
         if max_investor_allowlist_batch == 0 || max_investor_allowlist_batch > 100 {
             fail(&env, EscrowError::AllowlistParametersOutOfRange);
         }
-        if persistent_ttl_min_ledgers == 0 || persistent_ttl_min_ledgers > 1_000_000 {
+        if pers_ttl_min_ext_ledgers == 0 || pers_ttl_min_ext_ledgers > 1_000_000 {
             fail(&env, EscrowError::AllowlistParametersOutOfRange);
         }
 
         let params = AllowlistParameters {
             max_investor_allowlist_batch,
-            persistent_ttl_min_ledgers,
+            pers_ttl_min_ext_ledgers,
         };
 
         env.storage()
@@ -8229,10 +8229,10 @@ impl LiquifactEscrow {
             .set(&DataKey::AllowlistParameters, &params);
 
         AllowlistParametersUpdated {
-            name: symbol_short!("al_prm_up"),
+            name: symbol_short!("alprm_upd"),
             invoice_id: escrow.invoice_id,
             max_investor_allowlist_batch,
-            persistent_ttl_min_ledgers,
+            pers_ttl_min_ext_ledgers,
         }
         .publish(&env);
     }
