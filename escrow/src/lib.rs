@@ -243,6 +243,12 @@ pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 /// Upper bound on attestation digest read page size.
 pub const MAX_ATTESTATION_READ_PAGE: u32 = 20;
 
+/// Upper bound on [`LiquifactEscrow::get_fees_page`] per call.
+///
+/// Callers requesting a larger window will have it silently capped to this value, keeping
+/// per-call storage/CPU bounded without forcing the caller to hard-code the constant.
+pub const MAX_FEE_READ_PAGE: u32 = 20;
+
 /// Upper bound on [`LiquifactEscrow::sweep_terminal_dust`] per call (base units of the funding token).
 ///
 /// Caps blast radius if instrumentation mis-estimates “dust”; tune per asset decimals off-chain.
@@ -576,6 +582,9 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
     /// No fund movement is permitted until the hold is cleared by the admin.
     UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::get_fees_page`] received a `limit` that exceeds [`MAX_FEE_READ_PAGE`].
+    FeeReadPageTooLarge = 223,
 }
 
 #[inline(always)]
@@ -875,6 +884,16 @@ pub enum DataKey {
     /// **Additive key (ADR-007):** absent on instances predating this key ⇒ read as `0`
     /// (no fee), preserving legacy full-principal disbursement semantics.
     ProtocolFeeBps,
+    /// Append-only ordered list of [`FeeRecord`] entries written by [`LiquifactEscrow::withdraw`]
+    /// whenever a non-zero protocol fee is disbursed.
+    ///
+    /// **Additive key (ADR-007):** absent on instances that have never paid a non-zero fee
+    /// (including all legacy instances predating `protocol_fee_bps`).  Reads return an empty
+    /// list; no migration is required.
+    ///
+    /// Enumerated in insertion order (ascending by ledger timestamp) via
+    /// [`LiquifactEscrow::get_fees_page`].
+    FeeIndex,
 }
 
 // --- Data types ---
@@ -936,6 +955,31 @@ pub struct SmeCollateralCommitment {
 pub struct YieldTier {
     pub min_lock_secs: u64,
     pub yield_bps: i64,
+}
+
+/// Immutable record of a single protocol-fee disbursement appended to [`DataKey::FeeIndex`]
+/// by [`LiquifactEscrow::withdraw`] whenever `fee > 0`.
+///
+/// The index is **append-only**; no record is ever mutated or removed.  Off-chain indexers and
+/// audit tooling can page through the full history with [`LiquifactEscrow::get_fees_page`].
+///
+/// # Fields
+/// - `amount`      — Protocol fee amount (in funding-token base units) routed to treasury.
+/// - `treasury`    — Recipient address of the fee transfer (equals [`DataKey::Treasury`] at
+///                   the time of withdrawal).
+/// - `ledger_timestamp` — [`Env::ledger`] timestamp at which [`LiquifactEscrow::withdraw`] ran.
+///
+/// **Note:** a zero-fee withdrawal (when `protocol_fee_bps == 0`) does **not** append a record.
+/// The first entry in the index corresponds to the first non-zero fee disbursement.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeRecord {
+    /// Fee amount (base units of the funding token) transferred to `treasury`.
+    pub amount: i128,
+    /// Treasury address that received the fee.
+    pub treasury: Address,
+    /// Ledger timestamp at the moment of withdrawal.
+    pub ledger_timestamp: u64,
 }
 
 /// Captured exactly once at the first ledger transition to **funded** so settlement and claims can
@@ -2656,6 +2700,54 @@ impl LiquifactEscrow {
         let actual_limit = limit.min(MAX_INVESTOR_READ_BATCH);
         let end = (start + actual_limit).min(len);
 
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            result.push_back(index.get(i).unwrap());
+        }
+        result
+    }
+
+    /// Returns a paginated slice of protocol-fee disbursement records.
+    ///
+    /// Records are stored in insertion (chronological) order by [`LiquifactEscrow::withdraw`]
+    /// whenever a non-zero protocol fee is transferred to treasury.  The page is a read-only,
+    /// **empty-safe** view: instances that have never paid a fee (including all legacy instances
+    /// that predate `protocol_fee_bps`) return an empty list without error.
+    ///
+    /// # Arguments
+    /// * `start` — 0-based index of the first record to return.
+    /// * `limit` — Maximum records to return; must not exceed [`MAX_FEE_READ_PAGE`].
+    ///             Passing `0` returns an empty list.
+    ///
+    /// # Returns
+    /// A `Vec<FeeRecord>` containing at most `min(limit, MAX_FEE_READ_PAGE)` entries
+    /// beginning at position `start`.  Returns an empty list when `start >= total_records`.
+    ///
+    /// # Errors
+    /// - [`EscrowError::FeeReadPageTooLarge`] — `limit > MAX_FEE_READ_PAGE`.
+    pub fn get_fees_page(env: Env, start: u32, limit: u32) -> Vec<FeeRecord> {
+        ensure(
+            &env,
+            limit <= MAX_FEE_READ_PAGE,
+            EscrowError::FeeReadPageTooLarge,
+        );
+
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let index: Vec<FeeRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = index.len();
+        if start >= len {
+            return Vec::new(&env);
+        }
+
+        let end = (start + limit).min(len);
         let mut result = Vec::new(&env);
         for i in start..end {
             result.push_back(index.get(i).unwrap());
@@ -4446,6 +4538,22 @@ impl LiquifactEscrow {
                 &treasury,
                 fee,
             );
+
+            // Append an immutable FeeRecord to the audit index. Written *after* the transfer
+            // succeeds (checks-effects-interactions) and only when the fee is non-zero to keep
+            // the index free of zero-amount noise. Legacy callers that never set
+            // `protocol_fee_bps` are unaffected because the index stays absent (empty-safe).
+            let mut fee_index: Vec<FeeRecord> = env
+                .storage()
+                .instance()
+                .get(&DataKey::FeeIndex)
+                .unwrap_or_else(|| Vec::new(&env));
+            fee_index.push_back(FeeRecord {
+                amount: fee,
+                treasury: treasury.clone(),
+                ledger_timestamp: env.ledger().timestamp(),
+            });
+            env.storage().instance().set(&DataKey::FeeIndex, &fee_index);
         }
         if net > 0 {
             external_calls::transfer_funding_token_with_balance_checks(
