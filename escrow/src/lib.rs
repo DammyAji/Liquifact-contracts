@@ -3,7 +3,7 @@
 //!
 //! Holds investor funds for an invoice until settlement.
 //! - SME receives stablecoin when funding target is met ([`LiquifactEscrow::withdraw`])
-//! - SME records optional **collateral commitments** ([`LiquifactEscrow::record_sme_collateral_commitment`]) â€”
+//! - SME records optional **collateral commitments** ([`LiquifactEscrow::record_sme_collateral_commitment`]) —
 //!   these are **ledger records only**; they do **not** move tokens, freeze balances,
 //!   reserve assets, or create an enforceable on-chain claim.
 //! - [`LiquifactEscrow::settle`] finalizes the escrow after maturity (when configured).
@@ -13,7 +13,7 @@
 //! The constant [`SCHEMA_VERSION`] is written to [`DataKey::Version`] by [`LiquifactEscrow::init`]
 //! and is the canonical source of truth for upgrade decisions. **Current value: 6.**
 //!
-//! [`LiquifactEscrow::migrate`] **fails with typed errors in all current execution paths** â€” no
+//! [`LiquifactEscrow::migrate`] **fails with typed errors in all current execution paths** — no
 //! silent migration work is promised or performed. Operators must extend `migrate` before calling
 //! it, or redeploy when stored struct layout changes. See `docs/OPERATOR_RUNBOOK.md` for the full
 //! decision tree.
@@ -48,14 +48,14 @@
 //! ## Authorization guard ordering
 //!
 //! Every state-mutating entrypoint follows a canonical sequence (see
-//! `docs/escrow-security-checklist.md` Â§6 and [ADR-002](docs/adr/ADR-002-auth-boundaries.md)):
+//! `docs/escrow-security-checklist.md` §6 and [ADR-002](docs/adr/ADR-002-auth-boundaries.md)):
 //!
 //! 1. **Read-only** preconditions (legal hold, status checks, input validation).
 //! 2. **`Address::require_auth()`** for the bound role ([Stellar authorization](https://developers.stellar.org/docs/build/guides/auth/contract-authorization)).
 //! 3. **Storage writes** and **SEP-41 transfers** (via [`external_calls`]).
 //!
 //! Invariant: no instance/persistent storage mutation and no token transfer occurs until
-//! step 2 succeeds. Reading [`DataKey::Escrow`] before `require_auth` is intentional â€” it is
+//! step 2 succeeds. Reading [`DataKey::Escrow`] before `require_auth` is intentional — it is
 //! read-only and does not weaken the auth boundary.
 //!
 //! ## Invoice identifier (`invoice_id`)
@@ -69,7 +69,7 @@
 //!
 //! Each escrow instance binds exactly one **funding token** contract ([`DataKey::FundingToken`])
 //! at [`LiquifactEscrow::init`]; it cannot be changed after deploy. An optional **registry**
-//! ([`DataKey::RegistryRef`]) is a read-only discoverability hint only â€” it is **not** an authority
+//! ([`DataKey::RegistryRef`]) is a read-only discoverability hint only — it is **not** an authority
 //! for this contract and must not be used on-chain as proof of registry state without calling the
 //! registry yourself.
 //!
@@ -81,7 +81,7 @@
 //! It cannot run during a legal hold. Transfers go through [`crate::external_calls`] so **pre/post
 //! token balances** must match the requested amount (standard SEP-41 behavior); fee-on-transfer or
 //! malicious tokens are **explicitly out of scope** and fail with typed errors at the balance-check
-//! boundary. This is meant for rounding residue / stray transfers, not for settling live liabilities â€”
+//! boundary. This is meant for rounding residue / stray transfers, not for settling live liabilities —
 //! integrations that custody principal on-chain must keep token balances reconciled with
 //! `funded_amount` so treasury sweeps cannot pull user funds.
 //!
@@ -91,7 +91,7 @@
 //! [`Env::ledger`] timestamps only (no wall-clock oracle). Maturity, per-investor **claim locks**
 //! from [`LiquifactEscrow::fund_with_commitment`], and [`FundingCloseSnapshot`] metadata must be
 //! interpreted as **validator-observed ledger time**, including possible skew between simulated and
-//! live networksâ€”integrators should treat boundaries as `>=` / `<` tests on integer seconds.
+//! live networks—integrators should treat boundaries as `>=` / `<` tests on integer seconds.
 //!
 //! ## Optional tiered yield (immutable table at init)
 //!
@@ -127,13 +127,12 @@
 //! goes to the SME and no treasury transfer occurs.
 //!
 //! **Interaction with on-chain disbursement:** the fee is only realized when principal is
-//! custodied on-chain and the SME calls [`LiquifactEscrow::withdraw`] â€” this feature depends on
+//! custodied on-chain and the SME calls [`LiquifactEscrow::withdraw`] — this feature depends on
 //! the on-chain disbursement path. It does **not** apply to off-chain settlement
 //! ([`LiquifactEscrow::settle`]), investor refunds ([`LiquifactEscrow::refund`]), or investor
 //! claims ([`LiquifactEscrow::claim_investor_payout`]). The treasury here is the same immutable
 //! address used by [`LiquifactEscrow::sweep_terminal_dust`]; the fee transfer reuses the same
 //! SEP-41 balance-delta–checked path in [`external_calls`].
-
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(test)]
@@ -733,6 +732,43 @@ pub(crate) fn guard_status_in(env: &Env, actual_status: u32, allowed: &[u32], er
 #[inline(always)]
 pub(crate) fn require_funding_open(env: &Env, status: u32) {
     guard_status_eq(env, status, 0, EscrowError::EscrowNotOpenForFunding);
+}
+
+/// Helper: ensures investor is allowlisted if the allowlist is active.
+pub(crate) fn require_investor_allowlisted(
+    env: &Env,
+    investor: &Address,
+) -> Result<(), EscrowError> {
+    if LiquifactEscrow::is_allowlist_active(env.clone())
+        && !LiquifactEscrow::is_investor_allowlisted(env.clone(), investor.clone())
+    {
+        return Err(EscrowError::InvestorNotAllowlisted);
+    }
+    Ok(())
+}
+
+/// Shared guard: validate funding amount against positivity and minimum contribution floor.
+///
+/// Ensures the `amount` is strictly positive, and if a [`DataKey::MinContributionFloor`]
+/// is configured, ensures the amount meets or exceeds that floor. This logic is shared
+/// by all funding entrypoints to prevent inline validation repetition.
+///
+/// # Errors
+/// Returns [`EscrowError::FundingAmountNotPositive`] if `amount <= 0`.
+/// Returns [`EscrowError::FundingBelowMinContribution`] if `amount < floor`.
+pub(crate) fn validate_funding_amount(env: &Env, amount: i128) -> Result<(), EscrowError> {
+    if amount <= 0 {
+        return Err(EscrowError::FundingAmountNotPositive);
+    }
+    let floor: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::MinContributionFloor)
+        .unwrap_or(0);
+    if floor > 0 && amount < floor {
+        return Err(EscrowError::FundingBelowMinContribution);
+    }
+    Ok(())
 }
 
 /// Shared guard: assert that no legal/compliance hold is currently active.
@@ -5122,12 +5158,8 @@ impl LiquifactEscrow {
             );
         }
 
-        if Self::is_allowlist_active(env.clone()) {
-            ensure(
-                &env,
-                Self::is_investor_allowlisted(env.clone(), investor.clone()),
-                EscrowError::InvestorNotAllowlisted,
-            );
+        if let Err(e) = require_investor_allowlisted(&env, &investor) {
+            fail(&env, e);
         }
 
         let prev: i128 = Self::get_persistent_investor_contribution(&env, investor.clone());
