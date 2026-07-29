@@ -30,128 +30,13 @@ use soroban_sdk::{
     Address, Env, Event, String, Vec as SorobanVec,
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Bring an escrow to `status == 1` (funded) by depositing exactly `TARGET`
-/// from a single investor, then return the investor address.
-fn fund_to_target(client: &super::LiquifactEscrowClient<'_>, env: &Env) -> Address {
-    let investor = Address::generate(env);
-    client.fund(&investor, &TARGET);
-    investor
-}
-
-fn setup_claim_env<'a>(
-    env: &'a Env,
-    invoice_id: &str,
-    target: i128,
-    yield_bps: i64,
-) -> (
-    super::LiquifactEscrowClient<'a>,
-    StellarTestToken<'a>,
+fn setup_test() -> (
+    Env,
+    LiquifactEscrowClient<'static>,
+    Address,
     Address,
     Address,
 ) {
-    env.mock_all_auths();
-    let token = install_stellar_asset_token(env);
-    let (contract_id, client) = deploy_with_id(env);
-    let admin = Address::generate(env);
-    let sme = Address::generate(env);
-    let treasury = Address::generate(env);
-
-    client.init(
-        &admin,
-        &String::from_str(env, invoice_id),
-        &sme,
-        &target,
-        &yield_bps,
-        &0u64,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    (client, token, contract_id, treasury)
-}
-
-/// Set up an escrow backed by a real Stellar asset contract (SAC), fund it to
-/// target, and mint `TARGET` tokens into the escrow contract so `withdraw()` can
-/// actually transfer them.  Returns `(client, sme, sac_admin_client)`.
-fn setup_funded_with_token<'a>(
-    env: &'a Env,
-) -> (
-    super::LiquifactEscrowClient<'a>,
-    Address,
-    StellarAssetClient<'a>,
-) {
-    env.mock_all_auths();
-    let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
-    let token_id = sac.address();
-    let sac_admin = StellarAssetClient::new(env, &token_id);
-
-    let escrow_id = env.register(LiquifactEscrow, ());
-    let client = super::LiquifactEscrowClient::new(env, &escrow_id);
-    let admin = Address::generate(env);
-    let sme = Address::generate(env);
-    let treasury = Address::generate(env);
-
-    client.init(
-        &admin,
-        &soroban_sdk::String::from_str(env, "INV_TOK"),
-        &sme,
-        &TARGET,
-        &800i64,
-        &0u64,
-        &token_id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None,
-        &None::<i64>,
-    );
-
-    // Mint tokens to investor so fund() can transfer them into the escrow.
-    let investor = Address::generate(env);
-    sac_admin.mint(&investor, &TARGET);
-    client.fund(&investor, &TARGET);
-
-    // The tokens are now in the escrow from the fund() transfer — no extra mint needed for withdraw().
-
-    (client, sme, sac_admin)
-}
-
-/// Bring an escrow to `status == 2` (settled) and return the investor address.
-fn settle_escrow(client: &super::LiquifactEscrowClient<'_>, env: &Env) -> Address {
-    let investor = fund_to_target(client, env);
-    client.settle();
-    investor
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// `withdraw` — happy path
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Status must become 3 after a successful `withdraw`.
-///
-/// This is the primary assertion required by the task description.
-#[test]
-fn withdraw_sets_status_to_three() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _sme, _sac) = setup_funded_with_token(&env);

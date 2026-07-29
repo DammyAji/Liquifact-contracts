@@ -3112,3 +3112,245 @@ fn test_pending_admin_remaining_consistent_with_accept_admin() {
     assert_eq!(client.get_pending_admin_remaining_secs(), Some(0));
     assert_contract_error(client.try_accept_admin(), EscrowError::AdminProposalExpired);
 }
+
+// ── set_storage_limit / get_storage_limit (GitHub Issue #829) ─────────────────
+
+/// Unconfigured escrows expose the historical hard-coded TTL extension (3600 ledgers).
+#[test]
+fn test_get_storage_limit_defaults_to_compile_time_constant() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    assert_eq!(
+        client.get_storage_limit(),
+        crate::INSTANCE_TTL_MIN_EXTENSION_LEDGERS,
+        "unset StorageLimit must preserve the hard-coded TTL extension"
+    );
+    assert_eq!(client.get_storage_limit(), 3_600u32);
+}
+
+/// Admin may set an in-bounds storage limit; getter reflects the new value.
+#[test]
+fn test_set_storage_limit_success() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let new_limit = 7_200u32;
+    assert_eq!(client.set_storage_limit(&new_limit), new_limit);
+    assert_eq!(client.get_storage_limit(), new_limit);
+
+    // Boundary values are accepted.
+    assert_eq!(
+        client.set_storage_limit(&crate::MIN_STORAGE_LIMIT_LEDGERS),
+        crate::MIN_STORAGE_LIMIT_LEDGERS
+    );
+    assert_eq!(client.get_storage_limit(), crate::MIN_STORAGE_LIMIT_LEDGERS);
+    assert_eq!(
+        client.set_storage_limit(&crate::MAX_STORAGE_LIMIT_LEDGERS),
+        crate::MAX_STORAGE_LIMIT_LEDGERS
+    );
+    assert_eq!(client.get_storage_limit(), crate::MAX_STORAGE_LIMIT_LEDGERS);
+}
+
+/// Zero and above-max limits are rejected with `StorageLimitOutOfRange`.
+#[test]
+fn test_set_storage_limit_out_of_range() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    assert_contract_error(
+        client.try_set_storage_limit(&0u32),
+        EscrowError::StorageLimitOutOfRange,
+    );
+    assert_contract_error(
+        client.try_set_storage_limit(&(crate::MAX_STORAGE_LIMIT_LEDGERS + 1)),
+        EscrowError::StorageLimitOutOfRange,
+    );
+    // Rejected sets must not mutate the stored (default) limit.
+    assert_eq!(
+        client.get_storage_limit(),
+        crate::INSTANCE_TTL_MIN_EXTENSION_LEDGERS
+    );
+}
+
+/// Non-admin callers cannot set the storage limit.
+#[test]
+#[should_panic]
+fn test_set_storage_limit_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "STOR_U"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+    env.mock_auths(&[]);
+    client.set_storage_limit(&7_200u32);
+}
+
+/// `bump_ttl` remains callable after an admin override (uses the configured horizon).
+#[test]
+fn test_bump_ttl_succeeds_after_storage_limit_override() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.set_storage_limit(&1_800u32);
+    assert_eq!(client.get_storage_limit(), 1_800u32);
+
+    // Empty allowlist still exercises the path that loads the configured storage limit.
+    let addrs = soroban_sdk::Vec::<Address>::new(&env);
+    client.bump_ttl(&addrs);
+}
+
+// --- fees limit tests ---
+
+#[test]
+fn test_set_fees_limit_updates_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (token, treasury) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV001"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    let updated = client.set_fees_limit(&2500i64);
+    assert_eq!(updated, 2500i64);
+    assert_eq!(client.get_fees_limit(), 2500i64);
+}
+
+#[test]
+fn test_set_fees_limit_rejects_out_of_range_values() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let (token, treasury) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV002"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    assert_contract_error(
+        client.try_set_fees_limit(&-1i64),
+        EscrowError::FeesLimitOutOfRange,
+    );
+    assert_contract_error(
+        client.try_set_fees_limit(&10001i64),
+        EscrowError::FeesLimitOutOfRange,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_set_fees_limit_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (token, treasury) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV003"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    env.mock_auths(&[]);
+    client.set_fees_limit(&5000i64);
+}
+
+#[test]
+fn test_get_fees_limit_defaults_to_10000() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let (token, treasury) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, DFLT001),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<i64>,
+    );
+
+    assert_eq!(client.get_fees_limit(), 10_000i64);
+}
