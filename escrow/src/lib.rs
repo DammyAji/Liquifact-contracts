@@ -555,6 +555,8 @@ pub enum EscrowError {
     /// Reject at deposit time so a settled escrow cannot hold an investor's payout
     /// claim hostage beyond the point where principal is due.
     CommitmentLockExceedsMaturity = 111,
+    /// [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] amount exceeds [`MAX_INVOICE_AMOUNT`].
+    FundingAmountExceedsMax = 112,
 
     /// [`LiquifactEscrow::settle`] blocked while a legal hold is active.
     LegalHoldBlocksSettlement = 120,
@@ -6424,8 +6426,18 @@ impl LiquifactEscrow {
         // remain enforced inside `fund_impl` against the running accumulated state.
         for i in 0..n {
             let (_, amount) = entries.get(i).unwrap();
-            if let Err(e) = validate_funding_amount(&env, amount) {
-                fail(&env, e);
+            ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
+            ensure(
+                &env,
+                amount <= MAX_INVOICE_AMOUNT,
+                EscrowError::FundingAmountExceedsMax,
+            );
+            if floor > 0 {
+                ensure(
+                    &env,
+                    amount >= floor,
+                    EscrowError::FundingBelowMinContribution,
+                );
             }
         }
 
@@ -6471,8 +6483,24 @@ impl LiquifactEscrow {
     ) -> InvoiceEscrow {
         investor.require_auth();
 
-        if let Err(e) = validate_funding_amount(&env, amount) {
-            fail(&env, e);
+        ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
+        ensure(
+            &env,
+            amount <= MAX_INVOICE_AMOUNT,
+            EscrowError::FundingAmountExceedsMax,
+        );
+
+        let floor: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinContributionFloor)
+            .unwrap_or(0);
+        if floor > 0 {
+            ensure(
+                &env,
+                amount >= floor,
+                EscrowError::FundingBelowMinContribution,
+            );
         }
 
         // env.clone(): env is used again after this call for storage writes and publish.
