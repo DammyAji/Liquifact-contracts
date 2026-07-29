@@ -3692,6 +3692,30 @@ impl LiquifactEscrow {
         );
     }
 
+    /// Assert that the revocation marker at `index` matches `expected_revoked`.
+    ///
+    /// Reads `DataKey::AttestationRevoked(index)` (absent ⇒ not revoked) and panics with
+    /// `error` when the current state differs from `expected_revoked`. Consolidates the
+    /// revocation-state guard that was previously inlined at each mutation call site:
+    /// - `revoke_attestation_digest` / `revoke_attestation_digests` require the entry to be
+    ///   **not** revoked, surfacing [`EscrowError::AttestationAlreadyRevoked`] otherwise.
+    /// - `unrevoke_attestation_digest` requires the entry to be **already** revoked, surfacing
+    ///   [`EscrowError::AttestationNotRevoked`] otherwise.
+    ///
+    /// Behaviour is identical to the previous inline checks; only the duplication is removed.
+    fn require_attestation_revocation_state(
+        env: &Env,
+        index: u32,
+        expected_revoked: bool,
+        error: EscrowError,
+    ) {
+        let is_revoked = env
+            .storage()
+            .instance()
+            .has(&DataKey::AttestationRevoked(index));
+        ensure(env, is_revoked == expected_revoked, error);
+    }
+
     pub fn get_version(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
@@ -4665,11 +4689,10 @@ impl LiquifactEscrow {
 
         let log = Self::load_attestation_log(&env);
         Self::require_attestation_index_in_range(&env, &log, index);
-        ensure(
+        Self::require_attestation_revocation_state(
             &env,
-            !env.storage()
-                .instance()
-                .has(&keys::attestation_revoked(index)),
+            index,
+            false,
             EscrowError::AttestationAlreadyRevoked,
         );
 
@@ -4729,11 +4752,10 @@ impl LiquifactEscrow {
             let index = indices.get(i).unwrap();
 
             Self::require_attestation_index_in_range(&env, &log, index);
-            ensure(
+            Self::require_attestation_revocation_state(
                 &env,
-                !env.storage()
-                    .instance()
-                    .has(&keys::attestation_revoked(index)),
+                index,
+                false,
                 EscrowError::AttestationAlreadyRevoked,
             );
 
@@ -4804,11 +4826,10 @@ impl LiquifactEscrow {
     pub fn unrevoke_attestation_digest(env: Env, index: u32) {
         let log = Self::load_attestation_log(&env);
         Self::require_attestation_index_in_range(&env, &log, index);
-        ensure(
+        Self::require_attestation_revocation_state(
             &env,
-            env.storage()
-                .instance()
-                .has(&keys::attestation_revoked(index)),
+            index,
+            true,
             EscrowError::AttestationNotRevoked,
         );
 
