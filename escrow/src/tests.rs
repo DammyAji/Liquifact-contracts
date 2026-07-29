@@ -20,11 +20,11 @@
 use super::{
     AttestationDigestAppended, AttestationDigestRevoked, AttestationDigestUnrevoked,
     CollateralRecordedEvt, ContractUpgraded, DataKey, DeprecatedTransferAdminUsed, EscrowError,
-    EscrowFunded, EscrowInitialized, EscrowUnfunded, FundingCancelled, FundingStateChanged,
+    EscrowFunded, EscrowInitialized, EscrowUnfunded, FeeRecord, FundingCancelled,
     FundingTargetUpdated, InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient,
     MaturityMaxHorizonUpdated, MaxUniqueInvestorsCapLowered, PrimaryAttestationBound,
-    RegistryRefRebound, TreasuryDustSwept, YieldTier, MAX_ATTESTATION_APPEND_BATCH,
-    MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT, MAX_FUND_BATCH, SCHEMA_VERSION,
+    RegistryRefRebound, TreasuryDustSwept, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES,
+    MAX_DUST_SWEEP_AMOUNT, MAX_FEE_READ_PAGE, MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
     symbol_short,
@@ -58,31 +58,34 @@ pub(crate) fn assert_contract_error<T, E>(
 // Focused test tree for escrow behavior. Shared helpers live here so feature
 // modules stay assertion-focused and each test still owns a fresh Env.
 mod admin;
+mod attestation_event_schema;
 mod attestations;
 mod auth_matrix;
 mod cap_validation;
-mod collateral_config_view;
-mod collateral_limit_setter;
-mod collateral_boundary_tests;
-mod collateral_boundary_tests;
 #[rustfmt::skip]
 mod coverage;
 mod external_calls;
 mod external_calls_mocked;
+mod fees;
 mod funding;
-mod funding_upgrade_auth;
+mod funding_state_view;
 mod init;
 mod integration;
 mod integration_status_guards;
 mod legal_hold;
 mod migration_errors;
-mod paginated_views;
 mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
-mod settlement_config_view;
 mod settlement_limit;
+mod yield_tier_overflow;
+
+mod allowlist_event_payloads;
+mod collateral_config_view;
+mod fees_setter_tests;
+mod yield_tier_setter;
+mod yield_tier_struct;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
@@ -228,5 +231,3 @@ pub fn init_and_fund_with_real_token<'a>(
 
     (client, escrow_id, sme)
 }
-
-mod yield_tier_boundaries;
