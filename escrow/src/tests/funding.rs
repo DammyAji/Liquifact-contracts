@@ -7769,24 +7769,24 @@ fn test_fund_amount_max_accepted() {
     // First call: below target — must produce no FundingStateChanged.
     client.fund(&investor, &(TARGET / 2));
     let after_first = env.events().all();
-    let fsc_after_first = after_first
-        .events()
-        .iter()
-        .any(|e| {
-            let candidate = FundingStateChanged {
-                name: symbol_short!("fstate_ch"),
-                invoice_id,
-                from_status: 0u32,
-                to_status: 1u32,
-                funded_amount: TARGET / 2,
-                funding_target: TARGET,
-                ledger_timestamp: env.ledger().timestamp(),
-                trigger: symbol_short!("fund"),
-            }
-            .to_xdr(&env, &contract_id);
-            *e == candidate
-        });
-    assert!(!fsc_after_first, "no FundingStateChanged after partial fund");
+    let fsc_after_first = after_first.events().iter().any(|e| {
+        let candidate = FundingStateChanged {
+            name: symbol_short!("fstate_ch"),
+            invoice_id,
+            from_status: 0u32,
+            to_status: 1u32,
+            funded_amount: TARGET / 2,
+            funding_target: TARGET,
+            ledger_timestamp: env.ledger().timestamp(),
+            trigger: symbol_short!("fund"),
+        }
+        .to_xdr(&env, &contract_id);
+        *e == candidate
+    });
+    assert!(
+        !fsc_after_first,
+        "no FundingStateChanged after partial fund"
+    );
 
     // Second call: reaches target — must produce exactly one FundingStateChanged.
     client.fund(&investor, &(TARGET / 2));

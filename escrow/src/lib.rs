@@ -1,3 +1,4 @@
+#![no_std]
 #![allow(clippy::too_many_arguments)]
 
 #[cfg(test)]
@@ -697,6 +698,7 @@ pub(crate) fn guard_not_legal_hold(env: &Env, error: EscrowError) {
 ///
 /// Used internally by entrypoints to gate `fund`, `settle`, `withdraw`, and
 /// `claim_investor_payout` when an operational pause is active.
+#[allow(dead_code)] // duplicate of `LiquifactEscrow::paused_active` impl below; kept as a crate-level helper.
 pub(crate) fn paused_active(env: &Env) -> bool {
     let paused: bool = env
         .storage()
@@ -3905,6 +3907,9 @@ impl LiquifactEscrow {
         let mut result = Vec::new(&env);
         for i in start..end {
             let activated_at = index.get(i).unwrap();
+            // `cleared_at` is always `None` here: only activation timestamps are stored in
+            // `PauseRecordIndex`; the cleared timestamp is materialized elsewhere when a
+            // pause is deactivated. Returning `None` is therefore correct for every record.
             let cleared_at = None;
             result.push_back(PauseRecord {
                 activated_at,

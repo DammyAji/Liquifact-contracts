@@ -68,12 +68,11 @@ fn test_upgrade_funding_admin_emits_event() {
     let hash = sample_hash(&env);
     client.upgrade_funding(&admin, &hash);
 
-    let emitted = !env
+    let emitted = env
         .events()
         .all()
-        .filter_by_contract(&contract_id)
-        .events()
-        .is_empty();
+        .iter()
+        .any(|(id, _topics, _data)| id == contract_id);
     assert!(
         emitted,
         "expected a FundingUpgradeAuthorized event from the contract"
