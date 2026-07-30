@@ -687,6 +687,10 @@ pub enum EscrowError {
     BumpTtlBatchEmpty = 234,
     /// [`LiquifactEscrow::bump_ttl_batch`] exceeded [`MAX_BUMP_TTL_BATCH`].
     BumpTtlBatchTooLarge = 235,
+    /// The yield-tier table supplied to [`LiquifactEscrow::set_yield_tiers`] violates an
+    /// invariant: the table is empty, a `yield_bps` falls outside `0..=10_000`,
+    /// `min_lock_secs` is not strictly increasing, or `yield_bps` decreases between tiers.
+    YieldTierTableInvalid = 236,
 }
 
 #[inline(always)]
@@ -1734,6 +1738,25 @@ pub struct LegalHoldClearDelayUpdated {
     pub invoice_id: Symbol,
     pub old_delay: u64,
     pub new_delay: u64,
+}
+/// Yield-tier table replaced by the admin.
+///
+/// Emitted by [`LiquifactEscrow::set_yield_tiers`] once the replacement table has passed
+/// every `init`-equivalent invariant and has been written to [`DataKey::YieldTierTable`].
+/// A rejected call emits nothing, so the presence of this event is a reliable signal that
+/// the stored ladder actually changed.
+///
+/// # Fields
+/// - `name`: Hardcoded `yt_upd` symbol.
+/// - `invoice_id`: Invoice identifier of the escrow whose table changed.
+/// - `tier_count`: Number of tiers in the newly stored table.
+#[contractevent]
+pub struct YieldTierTableUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: String,
+    pub tier_count: u32,
 }
 
 /// SME collateral commitment metadata recorded.
@@ -3681,6 +3704,84 @@ impl LiquifactEscrow {
             result.push_back(tiers.get(i).unwrap());
         }
         result
+    }
+    /// Admin-only setter that replaces the entire yield-tier ladder.
+    ///
+    /// Before this entrypoint existed the ladder was fixed at [`LiquifactEscrow::init`] with
+    /// no update path, so correcting a mis-configured tier required redeploying the escrow.
+    /// `set_yield_tiers` closes that gap while enforcing exactly the invariants `init`
+    /// enforces, so no ladder reachable through this setter is unreachable through `init`.
+    ///
+    /// # Invariants
+    ///
+    /// 1. The table must be non-empty.
+    /// 2. Every `yield_bps` must satisfy `0 <= yield_bps <= 10_000`.
+    /// 3. `min_lock_secs` must be **strictly increasing** across tiers.
+    /// 4. `yield_bps` must be **non-decreasing** across tiers.
+    ///
+    /// Validation runs over the whole table **before** any storage write, so a rejected
+    /// call leaves the previously stored ladder byte-for-byte untouched. There is no
+    /// partial application.
+    ///
+    /// # Authorization
+    ///
+    /// [`InvoiceEscrow::admin`], enforced via [`Self::load_escrow_require_admin`]. A caller
+    /// without the admin authorization is rejected before any validation runs.
+    ///
+    /// # Errors
+    ///
+    /// - [`EscrowError::YieldTierTableInvalid`] (236) if any invariant above is violated.
+    ///
+    /// # Events
+    ///
+    /// Emits [`YieldTierTableUpdated`] carrying the new `tier_count` on success.
+    pub fn set_yield_tiers(env: Env, tiers: Vec<YieldTier>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        let n = tiers.len();
+        ensure(&env, n > 0, EscrowError::YieldTierTableInvalid);
+
+        // `prev_lock` starts at 0 so the first tier must declare a positive lock, and
+        // `prev_bps` starts at -1 so a first tier of 0 bps is accepted.
+        let mut prev_lock: u64 = 0;
+        let mut prev_bps: i64 = -1;
+
+        for i in 0..n {
+            let tier = tiers.get(i).unwrap();
+            ensure(
+                &env,
+                tier.yield_bps >= 0,
+                EscrowError::YieldTierTableInvalid,
+            );
+            ensure(
+                &env,
+                tier.yield_bps <= 10_000,
+                EscrowError::YieldTierTableInvalid,
+            );
+            ensure(
+                &env,
+                tier.min_lock_secs > prev_lock,
+                EscrowError::YieldTierTableInvalid,
+            );
+            ensure(
+                &env,
+                tier.yield_bps >= prev_bps,
+                EscrowError::YieldTierTableInvalid,
+            );
+            prev_lock = tier.min_lock_secs;
+            prev_bps = tier.yield_bps;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::YieldTierTable, &tiers);
+
+        YieldTierTableUpdated {
+            name: symbol_short!("yt_upd"),
+            invoice_id: escrow.invoice_id.clone(),
+            tier_count: n,
+        }
+        .publish(&env);
     }
 
     /// Pure read — no auth, no storage writes, safe for simulation.
