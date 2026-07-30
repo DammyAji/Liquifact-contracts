@@ -45,3 +45,61 @@ pub fn select_yield_tier(tiers: &[YieldTier], amount: i128) -> Option<YieldTier>
          .last()
          .cloned()
 }
+
+If the contribution amount is smaller than the min_amount of the lowest configured tier, the base yield rate (base_yield_bps) applies.
+```
+
+### 3. Boundary Rules
+
+```rust
+Tier thresholds use inclusive lower bounds ($\ge$):
+    Exact Threshold Match: If contribution_amount == tier.min_amount, the contribution qualifies for that higher tier.
+    Below Threshold: If contribution_amount == tier.min_amount - 1, the contribution falls into the lower preceding tier (or base yield).
+        $$\text{Tier Selected} = \max_{k} \{ \text{Tier}_k \mid \text{Amount} \ge \text{Tier}_k.\text{min\_amount} \}$$
+```
+### 4. Rate Calculation and Rounding Rules
+```rust
+Yield payouts are calculated using basis points integer arithmetic:
+$$\text{Yield Amount} = \left\lfloor \frac{\text{Contribution Amount} \times \text{Yield BPS}}{10\,000} \right\rfloor$$
+### Rounding Policy
+    Integer Truncation (Floor Rounding): Rust's standard / operator for integer types performs floor division (truncation toward zero).
+    Dust Amount Handling: Any remaining fractional token unit resulting from division is discarded in favor of the contract reserve (preventing contract over-distribution).
+```
+
+## 5. Worked Numeric Examples
+
+### Example Tier Configuration Table
+
+| Tier ID | `min_amount` (Base Units / XLM) | `yield_bps` | Effective Yield % |
+| :--- | :--- | :--- | :--- |
+| **Base** | < 1,000 | 500 BPS | 5.00% |
+| **Tier 1** | 1,000 | 750 BPS | 7.50% |
+| **Tier 2** | 5,000 | 1,000 BPS | 10.00% |
+| **Tier 3** | 10,000 | 1,500 BPS | 15.00% |
+
+## 3. Unit Test Verification
+
+To ensure your documentation remains in sync with code execution, verify boundary behavior by running unit tests in `contracts/escrow/src/tests/funding.rs` or adding assertions similar to:
+
+```rust
+#[test]
+fn test_tier_boundary_selection() {
+    let tiers = vec![
+        YieldTier { min_amount: 1_000, yield_bps: 750, committed_lock_secs: 0 },
+        YieldTier { min_amount: 5_000, yield_bps: 1_000, committed_lock_secs: 0 },
+    ];
+
+    // Below Tier 1 -> None (Base yield)
+    assert_eq!(select_yield_tier(&tiers, 999), None);
+    
+    // Inclusive boundary match -> Tier 1
+    assert_eq!(select_yield_tier(&tiers, 1_000).unwrap().yield_bps, 750);
+    
+    // Just below Tier 2 -> Tier 1
+    assert_eq!(select_yield_tier(&tiers, 4_999).unwrap().yield_bps, 750);
+    
+    // Inclusive boundary match -> Tier 2
+    assert_eq!(select_yield_tier(&tiers, 5_000).unwrap().yield_bps, 1_000);
+}
+
+
