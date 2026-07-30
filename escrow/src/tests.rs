@@ -62,6 +62,10 @@ mod attestation_event_schema;
 mod attestations;
 mod auth_matrix;
 mod cap_validation;
+mod collateral_boundary_tests;
+mod collateral_config_view;
+mod collateral_limit_setter;
+mod collateral_struct_ret;
 #[rustfmt::skip]
 mod coverage;
 mod external_calls;
@@ -80,12 +84,7 @@ mod reconciliation_lifecycle;
 mod settlement;
 mod settlement_batch_tests;
 mod settlement_limit;
-mod yield_tier_overflow;
-
-mod allowlist_event_payloads;
-mod collateral_config_view;
-mod yield_tier_setter;
-mod yield_tier_struct;
+mod yield_tier_boundaries;
 
 /// Registers a new escrow contract instance and returns its contract id.
 pub fn deploy_id(env: &Env) -> Address {
