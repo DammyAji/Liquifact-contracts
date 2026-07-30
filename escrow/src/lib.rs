@@ -1904,6 +1904,8 @@ pub struct AttestationDigestRevoked {
     pub index: u32,
 }
 
+/// Emitted after a successful [`LiquifactEscrow::unrevoke_attestation_digest`].
+/// Clears the revocation marker for a previously revoked attestation digest entry.
 #[contractevent]
 pub struct AttestationDigestUnrevoked {
     #[topic]
