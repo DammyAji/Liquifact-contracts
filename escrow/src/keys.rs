@@ -93,17 +93,80 @@ pub fn collateral_pledge_key() -> DataKey {
     DataKey::SmeCollateralPledge
 }
 
-/// Per-investor persistent claim-not-before ledger timestamp (`0` = no extra claim gate).
-pub(crate) fn investor_claim_not_before(investor: Address) -> DataKey {
-    DataKey::InvestorClaimNotBefore(investor)
+// ---------------------------------------------------------------------------
+// Yield-tier key constructors
+// ---------------------------------------------------------------------------
+
+/// Instance-storage key for the configured yield-tier table.
+#[inline(always)]
+pub const fn yield_tier_table_key() -> DataKey {
+    DataKey::YieldTierTable
 }
+
+/// Persistent-storage key for an investor's selected yield.
+#[inline(always)]
+pub fn investor_effective_yield_key(investor: &Address) -> DataKey {
+    DataKey::InvestorEffectiveYield(investor.clone())
+}
+
+/// Persistent-storage key for an investor's earliest claim timestamp.
+#[inline(always)]
+pub fn investor_claim_not_before_key(investor: &Address) -> DataKey {
+    DataKey::InvestorClaimNotBefore(investor.clone())
+}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 /// Per-investor persistent claimed-payout marker.
 pub(crate) fn investor_claimed(investor: Address) -> DataKey {
     DataKey::InvestorClaimed(investor)
 }
 
-    // ── collateral_pledge_key ──────────────────────────────────────────────
+    // ── yield-tier keys ───────────────────────────────────────────────────
+
+    #[test]
+    fn yield_tier_table_key_preserves_existing_variant() {
+        assert!(matches!(yield_tier_table_key(), DataKey::YieldTierTable));
+    }
+
+    #[test]
+    fn investor_yield_keys_preserve_address_and_family() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::Env;
+
+        let env = Env::default();
+        let investor = Address::generate(&env);
+
+        match investor_effective_yield_key(&investor) {
+            DataKey::InvestorEffectiveYield(address) => assert_eq!(address, investor),
+            _ => panic!("unexpected effective-yield key variant"),
+        }
+        match investor_claim_not_before_key(&investor) {
+            DataKey::InvestorClaimNotBefore(address) => assert_eq!(address, investor),
+            _ => panic!("unexpected claim-lock key variant"),
+        }
+    }
+
+    #[test]
+    fn investor_yield_keys_keep_investors_separate() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::Env;
+
+        let env = Env::default();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        match investor_effective_yield_key(&first) {
+            DataKey::InvestorEffectiveYield(address) => assert_ne!(address, second),
+            _ => panic!("unexpected effective-yield key variant"),
+        }
+        match investor_claim_not_before_key(&second) {
+            DataKey::InvestorClaimNotBefore(address) => assert_ne!(address, first),
+            _ => panic!("unexpected claim-lock key variant"),
+        }
+    }
+    // ── collateral_pledge_key ────────────────────────────────────────────────
 
     /// The constructor must return the `SmeCollateralPledge` variant — verified by a
     /// `matches!` guard so the test does not depend on a `PartialEq` derive that the
