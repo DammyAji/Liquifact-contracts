@@ -78,12 +78,12 @@ mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod settlement_batch_tests;
 mod settlement_limit;
 mod yield_tier_overflow;
 
 mod allowlist_event_payloads;
 mod collateral_config_view;
-mod fees_setter_tests;
 mod yield_tier_setter;
 mod yield_tier_struct;
 
