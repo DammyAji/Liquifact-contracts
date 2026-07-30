@@ -2,7 +2,7 @@ use super::*;
 
 use crate::EscrowError;
 
-use soroban_sdk::{testutils::Address, Error, InvokeError};
+use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
 
 use std::fmt::Debug;
 
@@ -7947,4 +7947,172 @@ fn test_get_funding_records_full_iteration() {
     assert_eq!(collected.get(50).unwrap().1, amounts[50]);
     assert_eq!(collected.get(122).unwrap().0, investors[122]);
     assert_eq!(collected.get(122).unwrap().1, amounts[122]);
+}
+
+// ── Auth negative-path tests for funding ─────────────────────────────────────
+
+#[test]
+fn test_fund_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_fund(&investor, &1_000i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_fund_rejects_wrong_signer() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: Symbol::new(&env, "fund"),
+            args: SorobanVec::new(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_fund(&investor, &1_000i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_fund_with_commitment_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_fund_with_commitment(&investor, &1_000i128, &0u64);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_fund_with_commitment_rejects_wrong_signer() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: Symbol::new(&env, "fund_with_commitment"),
+            args: SorobanVec::new(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_fund_with_commitment(&investor, &1_000i128, &0u64);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_fund_batch_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+    let entries = SorobanVec::from_array(&env, [(investor, 1_000i128)]);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_update_funding_target_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_update_funding_target(&2_000i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_update_funding_target_rejects_non_admin() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let stranger = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: Symbol::new(&env, "update_funding_target"),
+            args: SorobanVec::new(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_update_funding_target(&2_000i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_lower_max_unique_investors_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    env.mock_auths(&[]);
+
+    // Must set a cap at init so the cap is configured
+    let result = client.try_lower_max_unique_investors(&5u32);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_raise_max_unique_investors_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_raise_max_unique_investors(&10u32);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_lower_min_contribution_floor_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_lower_min_contribution_floor(&500i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
+}
+
+#[test]
+fn test_raise_max_per_investor_rejects_no_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    env.mock_auths(&[]);
+
+    let result = client.try_raise_max_per_investor(&20_000i128);
+    assert_contract_error(result, EscrowError::Unauthorized);
 }
