@@ -701,6 +701,44 @@ pub(crate) fn ensure(env: &Env, condition: bool, error: EscrowError) {
     }
 }
 
+/// Validate a single yield tier against the base yield and (optionally) the
+/// preceding tier in the ladder.
+///
+/// This is the shared validation primitive for yield-tier tables: it encodes the
+/// per-tier rules exactly once so that every call site (init-time table
+/// validation and any admin tier-setter) applies identical checks. It returns a
+/// typed [`EscrowError`] rather than panicking so callers can decide how to
+/// surface the failure.
+///
+/// Rules (checked in order; the first violation is returned):
+/// - `tier.yield_bps` must be within `0..=10_000` → [`EscrowError::TierYieldOutOfRange`]
+/// - `tier.yield_bps` must be `>= base_yield`     → [`EscrowError::TierYieldBelowBase`]
+/// - when `prev` is `Some`, `tier.min_lock_secs` must be strictly greater than
+///   `prev.min_lock_secs` → [`EscrowError::TierLockNotIncreasing`]
+/// - when `prev` is `Some`, `tier.yield_bps` must be `>= prev.yield_bps`
+///   (non-decreasing) → [`EscrowError::TierYieldNotNonDecreasing`]
+pub(crate) fn validate_yield_tier(
+    tier: &YieldTier,
+    base_yield: i64,
+    prev: Option<&YieldTier>,
+) -> Result<(), EscrowError> {
+    if !(0..=10_000).contains(&tier.yield_bps) {
+        return Err(EscrowError::TierYieldOutOfRange);
+    }
+    if tier.yield_bps < base_yield {
+        return Err(EscrowError::TierYieldBelowBase);
+    }
+    if let Some(prev) = prev {
+        if tier.min_lock_secs <= prev.min_lock_secs {
+            return Err(EscrowError::TierLockNotIncreasing);
+        }
+        if tier.yield_bps < prev.yield_bps {
+            return Err(EscrowError::TierYieldNotNonDecreasing);
+        }
+    }
+    Ok(())
+}
+
 /// Assert that `actual_status == expected_status`, emitting `error` otherwise.
 ///
 /// This is the shared primitive used by all status gate helpers. Callers that need a
@@ -2123,28 +2161,9 @@ impl LiquifactEscrow {
         let n = tiers.len();
         for i in 0..n {
             let t = tiers.get(i).unwrap();
-            ensure(
-                env,
-                (0..=10_000).contains(&t.yield_bps),
-                EscrowError::TierYieldOutOfRange,
-            );
-            ensure(
-                env,
-                t.yield_bps >= base_yield,
-                EscrowError::TierYieldBelowBase,
-            );
-            if i > 0 {
-                let p = tiers.get(i - 1).unwrap();
-                ensure(
-                    env,
-                    t.min_lock_secs > p.min_lock_secs,
-                    EscrowError::TierLockNotIncreasing,
-                );
-                ensure(
-                    env,
-                    t.yield_bps >= p.yield_bps,
-                    EscrowError::TierYieldNotNonDecreasing,
-                );
+            let prev = if i > 0 { Some(tiers.get(i - 1).unwrap()) } else { None };
+            if let Err(e) = validate_yield_tier(&t, base_yield, prev.as_ref()) {
+                fail(env, e);
             }
         }
     }
