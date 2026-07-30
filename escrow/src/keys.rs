@@ -1,9 +1,6 @@
 //! Centralised storage-key definitions for the LiquiFact escrow contract.
 //!
-//! Funding logic previously constructed the [`DataKey`] variants inline at each call site.
-//! Two call sites agreeing on a key's shape by convention (rather than by construction) is
-//! exactly the drift risk this module removes: every caller now obtains a given key through one
-//! function instead of re-typing `DataKey::Variant(...)`.
+//! # Purpose
 //!
 //! All persistent and instance-storage keys are defined here as variants of [`DataKey`].
 //! Typed constructor functions are provided for every key family so that call sites never
@@ -16,7 +13,7 @@
 //! collateral entrypoints (`record_sme_collateral_commitment`, `clear_sme_collateral_commitment`,
 //! `get_sme_collateral_commitment`) call this function instead of constructing
 //! `DataKey::SmeCollateralPledge` inline. This ensures any future rename or split of the
-//! collateral key cannot silently diverge across call sites.
+//! collateral key cannot diverge across call sites.
 //!
 //! ## Funding keys
 //!
@@ -39,7 +36,10 @@ use soroban_sdk::Address;
 // Funding key constructors
 // ---------------------------------------------------------------------------
 
-/// Per-investor persistent principal recorded by `fund`.
+use crate::DataKey;
+use soroban_sdk::Address;
+
+/// Per-investor persistent principal recorded by `fund` / `fund_with_commitment` / `fund_batch`.
 pub(crate) fn investor_contribution(investor: Address) -> DataKey {
     DataKey::InvestorContribution(investor)
 }
@@ -93,13 +93,15 @@ pub fn collateral_pledge_key() -> DataKey {
     DataKey::SmeCollateralPledge
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Per-investor persistent claim-not-before ledger timestamp (`0` = no extra claim gate).
+pub(crate) fn investor_claim_not_before(investor: Address) -> DataKey {
+    DataKey::InvestorClaimNotBefore(investor)
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Per-investor persistent claimed-payout marker.
+pub(crate) fn investor_claimed(investor: Address) -> DataKey {
+    DataKey::InvestorClaimed(investor)
+}
 
     // ── collateral_pledge_key ──────────────────────────────────────────────
 
