@@ -6477,8 +6477,91 @@ pub fn partial_settle(env: Env, caller: Address) -> InvoiceEscrow {
         let payout = Self::compute_investor_payout(env.clone(), investor.clone());
         ensure(&env, payout > 0, EscrowError::PayoutZero);
 
-        // Mark before transfer — prevents double-pay on any re-entrant path.
-        Self::set_persistent_investor_claimed(&env, investor.clone(), true);
+/// Batch settlement entrypoint: settles multiple sibling escrow contract instances
+/// (separate deployments of this same contract) in a single call.
+///
+/// Every address in `escrows` is checked with [`LiquifactEscrow::is_settleable`] — the
+/// same single-source-of-truth gate [`LiquifactEscrow::settle`] applies — before any of
+/// them are mutated. A single non-settleable entry rejects the entire batch atomically
+/// instead of partially settling a prefix and leaving the rest untouched.
+///
+/// # Errors
+/// - [`EscrowError::SettlementBatchEmpty`] if `escrows` is empty.
+/// - [`EscrowError::SettlementBatchTooLarge`] if `escrows.len() > MAX_SETTLE_BATCH`.
+/// - [`EscrowError::SettlementNotFunded`] if any entry is not currently settleable.
+pub fn settle_batch(env: Env, escrows: Vec<Address>) -> Vec<InvoiceEscrow> {
+    let n = escrows.len();
+    ensure(&env, n > 0, EscrowError::SettlementBatchEmpty);
+    ensure(
+        &env,
+        n <= MAX_SETTLE_BATCH,
+        EscrowError::SettlementBatchTooLarge,
+    );
+
+    // Validate every target up front so a single non-settleable entry cannot leave a
+    // prefix of the batch settled while the rest is rejected.
+    for i in 0..n {
+        let addr = escrows.get(i).unwrap();
+        let client = LiquifactEscrowClient::new(&env, &addr);
+        ensure(
+            &env,
+            client.is_settleable(),
+            EscrowError::SettlementNotFunded,
+        );
+    }
+
+    let mut results = Vec::new(&env);
+    for i in 0..n {
+        let addr = escrows.get(i).unwrap();
+        let client = LiquifactEscrowClient::new(&env, &addr);
+        results.push_back(client.settle());
+    }
+    results
+}
+
+/// SME pulls funded liquidity, net of the immutable protocol fee.
+///
+/// Splits `funded_amount` of the bound funding token into a treasury **fee** and an SME
+/// **net payout**, then transitions status to 3 (withdrawn). Blocked when a legal hold or
+/// operational pause is active.
+///
+/// # Fee split
+/// ```text
+/// fee_bps    = DataKey::ProtocolFeeBps   (0..=10_000, default 0)
+/// fee        = funded_amount * fee_bps / 10_000   (floor, checked)
+/// sme_payout = funded_amount - fee                 (checked)
+/// ```
+/// `fee` is sent to [`DataKey::Treasury`] (only when `> 0`) and `sme_payout` to
+/// [`InvoiceEscrow::sme_address`]. **Conservation:** `sme_payout + fee == funded_amount`.
+/// Floor rounding means any residue below one `10_000`-th stays with the SME. With
+/// `fee_bps == 0` no treasury transfer is made and the SME receives the full `funded_amount`.
+///
+/// # Guard ordering
+///
+/// 1. Operational pause + legal-hold gates (read-only).
+/// 2. `sme_address.require_auth()` (via `load_escrow_require_sme`).
+/// 3. Status == 1 (funded) check.
+/// 4. Contract balance sufficiency check ([`EscrowError::InsufficientContractBalance`]).
+/// 5. Checked fee/net computation.
+/// 6. Status transition to 3, `DistributedPrincipal` update (by the full gross
+///    `funded_amount`), storage write.
+/// 7. SEP-41 token transfers (fee → treasury, net → SME) with balance-delta verification.
+/// 8. Event emission ([`SmeWithdrew`], carrying `amount = sme_payout` and `fee`).
+///
+/// # Errors
+/// - [`EscrowError::LegalHoldBlocksWithdrawal`] — hold is active.
+/// - [`EscrowError::WithdrawalNotFunded`] — escrow not in funded state.
+/// - [`EscrowError::InsufficientContractBalance`] — contract holds less than `funded_amount`.
+/// - [`EscrowError::WithdrawFeeArithmeticOverflow`] — `funded_amount * fee_bps` overflowed `i128`.
+/// - [`EscrowError::WithdrawNetArithmeticUnderflow`] — `funded_amount - fee` underflowed (unreachable for in-range `fee_bps`).
+pub fn withdraw(env: Env) -> InvoiceEscrow {
+    // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
+    ensure(
+        &env,
+        !Self::paused_active(&env),
+        EscrowError::PausedBlocksWithdrawal,
+    );
+    guard_not_legal_hold(&env, EscrowError::LegalHoldBlocksWithdrawal);
 
     let mut escrow = Self::load_escrow_require_sme(&env);
 
