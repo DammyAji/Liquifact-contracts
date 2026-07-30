@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
 //! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
@@ -147,7 +147,10 @@ use soroban_sdk::{
 
 pub mod external_calls;
 pub mod keys;
-pub use keys::{collateral_pledge_key, DataKey};
+pub use keys::{
+    collateral_pledge_key, investor_claim_not_before_key, investor_effective_yield_key,
+    yield_tier_table_key, DataKey,
+};
 
 /// Current storage schema version written to [`DataKey::Version`] by [`LiquifactEscrow::init`].
 ///
@@ -1635,7 +1638,7 @@ impl LiquifactEscrow {
         let Some(tiers) = env
             .storage()
             .instance()
-            .get::<DataKey, Vec<YieldTier>>(&DataKey::YieldTierTable)
+            .get::<DataKey, Vec<YieldTier>>(&yield_tier_table_key())
         else {
             return (base_yield, 0);
         };
@@ -1741,9 +1744,7 @@ impl LiquifactEscrow {
         }
 
         if let Some(tiers) = &yield_tiers {
-            env.storage()
-                .instance()
-                .set(&DataKey::YieldTierTable, tiers);
+            env.storage().instance().set(&yield_tier_table_key(), tiers);
         }
         if let Some(mc) = min_contribution {
             ensure(&env, mc > 0, EscrowError::MinContributionNotPositive);
@@ -2518,26 +2519,26 @@ impl LiquifactEscrow {
     fn get_persistent_investor_effective_yield(env: &Env, investor: Address) -> Option<i64> {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorEffectiveYield(investor))
+            .get(&investor_effective_yield_key(&investor))
     }
 
     fn set_persistent_investor_effective_yield(env: &Env, investor: Address, value: i64) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorEffectiveYield(investor), &value);
+            .set(&investor_effective_yield_key(&investor), &value);
     }
 
     fn get_persistent_investor_claim_not_before(env: &Env, investor: Address) -> u64 {
         env.storage()
             .persistent()
-            .get(&DataKey::InvestorClaimNotBefore(investor))
+            .get(&investor_claim_not_before_key(&investor))
             .unwrap_or(0)
     }
 
     fn set_persistent_investor_claim_not_before(env: &Env, investor: Address, value: u64) {
         env.storage()
             .persistent()
-            .set(&DataKey::InvestorClaimNotBefore(investor), &value);
+            .set(&investor_claim_not_before_key(&investor), &value);
     }
 
     fn get_persistent_investor_claimed(env: &Env, investor: Address) -> bool {
@@ -2659,7 +2660,7 @@ impl LiquifactEscrow {
     pub fn get_yield_tiers(env: Env) -> Vec<YieldTier> {
         env.storage()
             .instance()
-            .get::<DataKey, Vec<YieldTier>>(&DataKey::YieldTierTable)
+            .get::<DataKey, Vec<YieldTier>>(&yield_tier_table_key())
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -2711,9 +2712,7 @@ impl LiquifactEscrow {
 
         let escrow = Self::load_escrow_require_sme(&env);
 
-        env.storage()
-            .instance()
-            .remove(&collateral_pledge_key());
+        env.storage().instance().remove(&collateral_pledge_key());
 
         CollateralClearedEvt {
             name: symbol_short!("coll_clr"),
@@ -4970,12 +4969,12 @@ impl LiquifactEscrow {
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorEffectiveYield(addr.clone()),
+                &investor_effective_yield_key(&addr),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );
             env.storage().persistent().extend_ttl(
-                &DataKey::InvestorClaimNotBefore(addr.clone()),
+                &investor_claim_not_before_key(&addr),
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
                 PERSISTENT_TTL_MIN_EXTENSION_LEDGERS,
             );

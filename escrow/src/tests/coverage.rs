@@ -6,7 +6,7 @@ use crate::{
     AttestationDigestAppended, CollateralClearedEvt, CollateralCommitmentSnapshot,
     CollateralRecordedEvt, DataKey, EscrowCloseSnapshot, EscrowError, FundingCancelled,
     InvestorRefundedEvt, LiquifactEscrow, LiquifactEscrowClient, PrimaryAttestationBound,
-    RegistryRefRebound, TreasuryDustSwept, YieldTier, DEFAULT_MATURITY_MAX_HORIZON_SECS,
+    RegistryRefRebound, TreasuryDustSwept, YieldTier, yield_tier_table_key, DEFAULT_MATURITY_MAX_HORIZON_SECS,
     MAX_ATTESTATION_APPEND_ENTRIES, SCHEMA_VERSION,
 };
 use soroban_sdk::{
@@ -2428,7 +2428,7 @@ fn test_get_yield_bps_empty_tiers_branch() {
         let empty_tiers: SorobanVec<YieldTier> = SorobanVec::new(&env);
         env.storage()
             .instance()
-            .set(&DataKey::YieldTierTable, &empty_tiers);
+            .set(&yield_tier_table_key(), &empty_tiers);
     });
 
     let investor = Address::generate(&env);
