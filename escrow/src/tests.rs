@@ -78,6 +78,7 @@ mod pause;
 mod properties;
 mod reconciliation_lifecycle;
 mod settlement;
+mod settlement_batch_tests;
 mod settlement_limit;
 mod yield_tier_overflow;
 
