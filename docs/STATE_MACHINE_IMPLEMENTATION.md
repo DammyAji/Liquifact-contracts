@@ -70,7 +70,7 @@ Attempts to transition between states outside of the allowed paths will revert w
 | `1` (Funded) | `fund()` / `fund_batch()` | Funding attempted after target was already reached. | `EscrowNotOpenForFunding` (103) |
 | `1` (Funded) | `cancel_funding()` | Cancellation attempted on a fully funded escrow. | `CancelFundingNotOpen` (141) |
 | `1` (Funded) | `refund()` | Refund requested before escrow is cancelled. | `RefundNotCancelled` (142) |
-| `2` (Settled) | `settle()` / `withdraw()` | State transition requested on a terminal settled escrow. | `SettlementNotFunded` (121) / `WithdrawalNotFunded` (124) |
+| `2` (Settled) | `settle()` / `withdraw()` | State transition requested on a terminal settled escrow. | `EscrowAlreadySettled` (236) / `WithdrawalNotFunded` (124) |
 | `2` (Settled) | `cancel_funding()` | Cancellation requested on a terminal settled escrow. | `CancelFundingNotOpen` (141) |
 | `3` (Withdrawn) | `settle()` / `withdraw()` | State transition requested on a terminal withdrawn escrow. | `SettlementNotFunded` (121) / `WithdrawalNotFunded` (124) |
 | `4` (Cancelled) | `settle()` / `withdraw()` | State transition requested on a terminal cancelled escrow. | `SettlementNotFunded` (121) / `WithdrawalNotFunded` (124) |

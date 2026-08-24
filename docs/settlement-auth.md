@@ -62,7 +62,7 @@ Finalizes the escrow after maturity (when configured), transitioning to `status 
 | **Auth check** | `load_escrow_require_sme` → `sme_address.require_auth()` |
 | **Legal-hold gate** | Blocked if `LegalHold == true` → `LegalHoldBlocksSettlement (120)` |
 | **Operational pause gate** | Blocked if `Paused == true` → `PausedBlocksSettlement (211)` |
-| **Status precondition** | `status == 1` (Funded) → `SettlementNotFunded (121)` if not |
+| **Status precondition** | `status != 2` → `EscrowAlreadySettled (236)` (once-only guard); then `status == 1` (Funded) → `SettlementNotFunded (121)` if not |
 | **Maturity gate** | If `maturity > 0`, requires `ledger.timestamp() >= maturity` → `MaturityNotReached (122)` |
 | **State transition** | `1 → 2` (writes `SettledAt` ledger timestamp, emits `EscrowSettled` event) |
 | **Settle pool computation** | `settle_pool = funded_amount + (funded_amount * yield_bps / 10_000)` (floor) |
@@ -71,8 +71,9 @@ Finalizes the escrow after maturity (when configured), transitioning to `status 
 1. `ensure(!paused_active, PausedBlocksSettlement)`
 2. `guard_not_legal_hold(..., LegalHoldBlocksSettlement)`
 3. `load_escrow_require_sme` (loads escrow + `sme_address.require_auth()`)
-4. `ensure(status == 1, SettlementNotFunded)`
-5. `if maturity > 0 { ensure(now >= maturity, MaturityNotReached) }`
+4. `ensure(status != 2, EscrowAlreadySettled)` — once-only guard; a re-entrant/replayed second settle is rejected here
+5. `ensure(status == 1, SettlementNotFunded)`
+6. `if maturity > 0 { ensure(now >= maturity, MaturityNotReached) }`
 
 ---
 
@@ -223,7 +224,8 @@ Treasury sweeps residual funding-token balance from a terminal escrow (status 2,
 | Code | Constant | Trigger |
 |------|----------|---------|
 | 120 | `LegalHoldBlocksSettlement` | `settle()` with active legal hold |
-| 121 | `SettlementNotFunded` | `settle()` when `status != 1` |
+| 121 | `SettlementNotFunded` | `settle()` when `status != 1` and `status != 2` |
+| 236 | `EscrowAlreadySettled` | `settle()` on an already-settled escrow (`status == 2`) |
 | 122 | `MaturityNotReached` | `settle()` before `maturity` timestamp |
 | 123 | `LegalHoldBlocksWithdrawal` | `withdraw()` with active legal hold |
 | 124 | `WithdrawalNotFunded` | `withdraw()` when `status != 1` |
