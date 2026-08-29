@@ -15,7 +15,8 @@ code/name summary only.
 | `LegalHoldBlocksPartialSettle` | 201 | A legal hold is active when `partial_settle` is called. |
 | `PartialSettleNotOpen` | 202 | `partial_settle` called while escrow status is not `Open` (0). |
 | `LegalHoldBlocksSettlement` | 120 | A legal hold is active when `settle` is called. |
-| `SettlementNotFunded` | 121 | `settle` called before the escrow reached `Funded` status (1). |
+| `SettlementNotFunded` | 121 | `settle` called while the escrow is not in the `Funded` state (1) and not already `Settled` (2). For an already-settled escrow see `EscrowAlreadySettled` (236). |
+| `EscrowAlreadySettled` | 236 | `settle` (or a `settle_batch` entry) called on an escrow already in the `Settled` state (2). Settlement is strictly once-only. |
 | `MaturityNotReached` | 122 | `settle` called before the configured maturity timestamp. |
 | `LegalHoldBlocksWithdrawal` | 123 | A legal hold is active when `withdraw` is called. |
 | `WithdrawalNotFunded` | 124 | `withdraw` called before the escrow reached `Funded` status (1). |

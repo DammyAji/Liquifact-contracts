@@ -98,9 +98,10 @@ Every entrypoint evaluates guards in a fixed order. The general pattern is:
 1. Pause gate                   → ensure(!paused_active, PausedBlocksSettlement)
 2. Legal-hold gate              → guard_not_legal_hold(LegalHoldBlocksSettlement)
 3. SME authorization            → load_escrow_require_sme → sme_address.require_auth()
-4. State gate (funded)          → ensure(status == 1, SettlementNotFunded)
-5. Maturity gate                → ensure(now >= maturity, MaturityNotReached) if maturity > 0
-6. State transition             → status = 2
+4. Once-only guard              → ensure(status != 2, EscrowAlreadySettled)  (rejected here if already settled)
+5. State gate (funded)          → ensure(status == 1, SettlementNotFunded)
+6. Maturity gate                → ensure(now >= maturity, MaturityNotReached) if maturity > 0
+7. State transition             → status = 2
 ```
 
 ---
@@ -115,7 +116,8 @@ Every beneficiary-related rejection in the contract uses typed `EscrowError` var
 | 161 | `RotationNotOpen` | Status is not 0 or 1 (pre-settlement) | `rotate_beneficiary` |
 | 162 | `NewSmeSameAsCurrent` | `new_sme_address` equals the current beneficiary | `rotate_beneficiary` |
 | 120 | `LegalHoldBlocksSettlement` | Legal hold is active | `settle` |
-| 121 | `SettlementNotFunded` | Status is not 1 (funded) | `settle` |
+| 121 | `SettlementNotFunded` | Status is not 1 (funded) and not 2 (already settled) | `settle` |
+| 236 | `EscrowAlreadySettled` | Status is 2 (already settled); settlement is once-only | `settle` |
 | 123 | `LegalHoldBlocksWithdrawal` | Legal hold is active | `withdraw` |
 | 124 | `WithdrawalNotFunded` | Status is not 1 (funded) | `withdraw` |
 | 201 | `LegalHoldBlocksPartialSettle` | Legal hold is active | `partial_settle` |

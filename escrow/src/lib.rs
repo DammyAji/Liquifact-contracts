@@ -685,6 +685,13 @@ pub enum EscrowError {
     BumpTtlBatchEmpty = 234,
     /// [`LiquifactEscrow::bump_ttl_batch`] exceeded [`MAX_BUMP_TTL_BATCH`].
     BumpTtlBatchTooLarge = 235,
+    /// A second [`LiquifactEscrow::settle`] (or [`LiquifactEscrow::settle_batch`] entry)
+    /// was attempted on an escrow that already reached **settled** status (`status == 2`).
+    ///
+    /// Settlement is strictly once-only: the settled marker is committed before any outward
+    /// effect, so a re-entrant or replayed call is rejected here with a dedicated, stable
+    /// typed code rather than a misleading `SettlementNotFunded`.
+    EscrowAlreadySettled = 236,
 }
 
 #[inline(always)]
@@ -5400,6 +5407,11 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Finalizes a funded escrow into **settled** status (status `1 → 2`), recording the
+    /// settled marker atomically **before** emitting the [`EscrowSettled`] event (checks-
+    /// effects-interactions: the once-only guard and `SettledAt` write precede any outward
+    /// effect). Settlement is strictly once-only — a second call is rejected with the
+    /// dedicated [`EscrowError::EscrowAlreadySettled`] typed error.
     pub fn settle(env: Env) -> SettlementResult {
         // Operational pause gate (read-only), before require_auth and orthogonal to legal hold.
         ensure(
@@ -5413,6 +5425,16 @@ impl LiquifactEscrow {
 
         // env.clone(): env is used again after this call for ledger timestamp, storage set, and publish.
         let mut escrow = Self::load_escrow_require_sme(&env);
+
+        // Once-only settlement guard. `settle` transitions status 1 → 2 and is the only
+        // writer of the `SettledAt` marker, so `status == 2` uniquely identifies an escrow
+        // that has already been settled. A re-entrant or replayed second call is rejected
+        // here with a dedicated typed error *before* the funded-status gate, so a caller
+        // can distinguish "already settled" from "not yet funded/open"
+        // ([`EscrowError::SettlementNotFunded`]). This guard is total across all settlement
+        // entrypoints: [`LiquifactEscrow::settle_batch`] invokes this same entrypoint per
+        // target, so a duplicate address in a batch is rejected atomically.
+        ensure(&env, escrow.status != 2, EscrowError::EscrowAlreadySettled);
 
         ensure(&env, escrow.status == 1, EscrowError::SettlementNotFunded);
 
@@ -5467,9 +5489,9 @@ impl LiquifactEscrow {
     /// Batch settle entrypoint: settle multiple escrows in a single call.
     ///
     /// Each address is processed sequentially. All existing [`LiquifactEscrow::settle`]
-    /// invariants (pause gate, legal hold, SME auth, funded status, maturity check) are
-    /// enforced per entry. The entire batch is atomic: if any escrow fails to settle,
-    /// the entire call reverts.
+    /// invariants (pause gate, legal hold, SME auth, funded status, maturity check, and the
+    /// once-only [`EscrowError::EscrowAlreadySettled`] guard) are enforced per entry. The
+    /// entire batch is atomic: if any escrow fails to settle, the entire call reverts.
     ///
     /// # Parameters
     /// - `escrows`: `Vec<Address>` of escrow contract addresses to settle.
@@ -6982,6 +7004,9 @@ pub struct ReconciliationView {
 
 // #[cfg(test)]
 // mod tests;
+
+#[cfg(test)]
+mod settlement_guard_tests;
 
 /// Default starting balance assigned to any address that has never been seen by the
 /// [`DefaultMockToken`] contract.

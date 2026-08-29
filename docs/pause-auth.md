@@ -126,12 +126,13 @@ ensure(
 When **both** pause and legal hold are active, the pause gate fires **first** (it appears earlier in the pre-`require_auth` sequence). For example, `settle`:
 
 ```text
-1. paused_active() check  → panics with PausedBlocksSettlement (211)
+1. paused_active() check     → panics with PausedBlocksSettlement (211)
 2. legal_hold_active() check → would panic with LegalHoldBlocksSettlement (120)
-3. status check             → would panic with SettlementNotFunded (121)
-4. maturity check           → would panic with MaturityNotReached (122)
-5. sme_address.require_auth()
-6. Storage write
+3. status != 2 check         → would panic with EscrowAlreadySettled (236) if already settled
+4. status == 1 check         → would panic with SettlementNotFunded (121)
+5. maturity check            → would panic with MaturityNotReached (122)
+6. sme_address.require_auth()
+7. Storage write
 ```
 
 This ordering is intentional and tested: `escrow/src/tests/pause.rs` §12 covers the precedence with tests like `pause_gate_fires_before_legal_hold_settle`.

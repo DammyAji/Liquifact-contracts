@@ -54,7 +54,8 @@ Checked before `require_auth`, orthogonal to the legal hold. A pause auto-expire
 | Code | Variant | Entrypoint(s) | When it fires | How to avoid it |
 | ---: | --- | --- | --- | --- |
 | 202 | `PartialSettleNotOpen` | `partial_settle` | `InvoiceEscrow::status != 0` (escrow is not open). | `partial_settle` is only valid while the escrow is still accepting contributions (`status = 0`). Check status before calling. |
-| 121 | `SettlementNotFunded` | `settle` | `InvoiceEscrow::status != 1` (escrow has not reached funded status). | `settle` requires `status = 1`. Fund the escrow to the target (or call `partial_settle`) first. |
+| 121 | `SettlementNotFunded` | `settle` | `InvoiceEscrow::status != 1` and `status != 2` (escrow is neither funded nor already settled). | `settle` requires `status = 1`. Fund the escrow to the target (or call `partial_settle`) first. |
+| 236 | `EscrowAlreadySettled` | `settle` | `InvoiceEscrow::status == 2` (escrow is already settled). Settlement is strictly once-only. | Do not call `settle` again after a successful settlement; a re-entrant or replayed call is rejected with this dedicated, stable typed code. |
 | 124 | `WithdrawalNotFunded` | `withdraw` | `InvoiceEscrow::status != 1`. | `withdraw` requires `status = 1`. Call `settle` before `withdraw` is not the correct sequence — the SME must call `withdraw` while the escrow is in the funded state (`status = 1`), after which `settle` transitions to `status = 2`. Wait for funding to complete first. |
 | 127 | `InvestorClaimNotSettled` | `claim_investor_payout` | `InvoiceEscrow::status != 2`. | Investors may only claim after the escrow has been fully settled. Check `get_escrow().status == 2` before calling. |
 
@@ -113,9 +114,10 @@ conditions are true simultaneously.
 1. Operational-pause gate → `PausedBlocksSettlement` (211)
 2. Legal-hold gate → `LegalHoldBlocksSettlement` (120)
 3. `sme_address.require_auth()` — Soroban host auth failure
-4. Status == 1 check → `SettlementNotFunded` (121)
-5. Maturity check → `MaturityNotReached` (122)
-6. Payout arithmetic → `ComputePayoutArithmeticOverflow` (129)
+4. Once-only guard, `status != 2` → `EscrowAlreadySettled` (236) — fires before the funded check so callers can distinguish "already settled" from "not yet funded"
+5. Status == 1 check → `SettlementNotFunded` (121)
+6. Maturity check → `MaturityNotReached` (122)
+7. Payout arithmetic → `ComputePayoutArithmeticOverflow` (129)
 
 ### `withdraw()`
 1. Operational-pause gate → `PausedBlocksWithdrawal` (212)
