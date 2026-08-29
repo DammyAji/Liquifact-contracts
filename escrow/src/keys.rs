@@ -90,7 +90,12 @@ pub(crate):: fn funding_token() -> DataKey {
     DataKey::FundingToken
 }
 
-/// Instance-storage pending admin transfer proposal (address + deadline).
-pub(crate) fn pending_admin_transfer() -> DataKey {
-    DataKey::PendingAdmin
+/// Instance-storage invocation nonce for cross-contract callbacks.
+pub(crate) fn callback_nonce() -> DataKey {
+    DataKey::CallbackNonce
+}
+
+/// Instance-storage pending callback context keyed by invocation nonce.
+pub(crate) fn callback_context(nonce: u64) -> DataKey {
+    DataKey::CallbackContext(nonce)
 }
