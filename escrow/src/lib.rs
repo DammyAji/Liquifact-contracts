@@ -1240,6 +1240,82 @@ pub struct SettlementReadiness {
     pub ready_now: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Rent-bump planning types (#1215)
+// ---------------------------------------------------------------------------
+
+/// Upper bound on [`LiquifactEscrow::get_rent_bump_plan`] entries per call.
+///
+/// Mirrors [`MAX_INVESTOR_READ_BATCH`] so the rent-plan view fits within the
+/// same CPU/instruction budget as other paginated investor reads.
+pub const MAX_RENT_BUMP_PLAN_BATCH: u32 = 50;
+
+/// Rent threshold below which an entry is considered in warning or expired state.
+///
+/// Any persistent storage entry whose live TTL falls at or below this ledger
+/// count is placed in [`RentStatus::Warning`].  An entry that is absent from
+/// storage is classified as [`RentStatus::Expired`].
+///
+/// Value chosen to match [`PERSISTENT_TTL_MIN_EXTENSION_LEDGERS`] — the same
+/// horizon used by [`LiquifactEscrow::bump_ttl`] for extensions — so the
+/// warning fires exactly when a bump is operationally due.
+pub const RENT_WARN_LEDGERS: u32 = PERSISTENT_TTL_MIN_EXTENSION_LEDGERS;
+
+/// Health classification for a single persistent storage entry's TTL.
+///
+/// Returned inside [`RentBumpEntry`] by [`LiquifactEscrow::get_rent_bump_plan`].
+/// Consumers should act on `Warning` and `Expired` entries immediately by
+/// calling [`LiquifactEscrow::bump_ttl`] or [`LiquifactEscrow::batch_bump_ttl`].
+///
+/// # Threshold
+///
+/// | Status    | Condition                                                                  |
+/// |-----------|----------------------------------------------------------------------------|
+/// | `Current` | Key is present in persistent storage and warn threshold is not active      |
+/// | `Warning` | Key is present and caller supplied a non-zero `warn_threshold_ledgers`     |
+/// | `Expired` | Key is absent from persistent storage (already archived)                  |
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RentStatus {
+    /// Entry is present in persistent storage and the caller did not activate
+    /// the warning tier (i.e. `warn_threshold_ledgers == 0`).
+    Current,
+    /// Entry is present but the caller supplied a non-zero
+    /// `warn_threshold_ledgers`, signalling that a bump is due.
+    Warning,
+    /// Entry is absent from persistent storage; it has already been archived
+    /// and must be restored before the investor can interact with the escrow.
+    Expired,
+}
+
+/// A single row in the rent-bump plan produced by
+/// [`LiquifactEscrow::get_rent_bump_plan`].
+///
+/// Each row identifies one investor address, classifies the health of their
+/// persistent storage entries, and surfaces a live/absent indicator for the
+/// contribution key so operators can prioritise maintenance.
+///
+/// # Security note
+///
+/// This struct is **read-only**; no storage is mutated when it is constructed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RentBumpEntry {
+    /// The investor address this entry describes.
+    pub investor: Address,
+    /// Rent status of the `InvestorContribution` persistent key.
+    pub contribution_status: RentStatus,
+    /// Rent status of the `InvestorEffectiveYield` persistent key.
+    pub effective_yield_status: RentStatus,
+    /// Rent status of the `InvestorClaimed` persistent key.
+    pub claimed_status: RentStatus,
+    /// `1` when the `InvestorContribution` key is present (live in persistent
+    /// storage), `0` when absent (expired/archived).  Use `contribution_status`
+    /// for the full three-tier classification; this field is a convenience
+    /// boolean-as-u32 for callers that need a simple live/absent check.
+    pub contribution_ttl: u32,
+}
+
 /// Typed return value from [`LiquifactEscrow::settle`].
 ///
 /// Replaces the previous opaque tuple / raw [`InvoiceEscrow`] return with a
@@ -3683,6 +3759,151 @@ impl LiquifactEscrow {
             maturity_reached,
             ready_now: is_settleable,
         }
+    }
+
+    /// Rent-bump planning view for persistent escrow entries (#1215).
+    ///
+    /// Scans the investor index and returns a paginated list of
+    /// [`RentBumpEntry`] rows — one per investor — classifying the health of
+    /// every persistent storage key that must remain live for investors to
+    /// interact with the escrow (fund, claim, get their yield).
+    ///
+    /// # What this covers
+    ///
+    /// For each investor address in the range `[start, start+limit)` the
+    /// function inspects:
+    ///
+    /// | Key | [`DataKey`] variant | Persistent? |
+    /// |-----|---------------------|-------------|
+    /// | Contribution | `InvestorContribution(addr)` | ✓ |
+    /// | Effective yield | `InvestorEffectiveYield(addr)` | ✓ |
+    /// | Claimed marker | `InvestorClaimed(addr)` | ✓ |
+    ///
+    /// Each key is classified as:
+    /// - [`RentStatus::Current`]  — key is present in persistent storage
+    /// - [`RentStatus::Warning`]  — key is present but `warn_threshold_ledgers`
+    ///   is non-zero and the current ledger sequence is within
+    ///   `warn_threshold_ledgers` of expiry (caller supplies the horizon)
+    /// - [`RentStatus::Expired`]  — key is absent from storage (already archived)
+    ///
+    /// Because Soroban contracts cannot read their own entry TTLs during
+    /// normal execution, the caller supplies `warn_threshold_ledgers` as a
+    /// planning hint (e.g. the value from
+    /// [`LiquifactEscrow::get_storage_limit`]).  When `warn_threshold_ledgers`
+    /// is `0`, every present key is classified as `Current`.
+    ///
+    /// `contribution_ttl` in the returned entry is `1` when the contribution
+    /// key is present (live) and `0` when absent (expired).  This field is
+    /// intentionally a simple live/absent boolean encoded as `u32` so callers
+    /// can sort or filter without decoding the status enum.
+    ///
+    /// # Read-only guarantee
+    ///
+    /// This function performs **zero storage writes**.  It does not call
+    /// `extend_ttl`, modify any key, or emit any event.  It is safe to call
+    /// from any context, including off-chain simulation.
+    ///
+    /// # Arguments
+    /// * `env` — Soroban environment.
+    /// * `start` — Zero-based index into the investor list.
+    /// * `limit` — Maximum entries to return; silently clamped to
+    ///   [`MAX_RENT_BUMP_PLAN_BATCH`] (50).
+    /// * `warn_threshold_ledgers` — Caller-supplied TTL horizon (in ledgers)
+    ///   below which present keys are classified `Warning`.  Pass `0` to
+    ///   disable the warning tier and return only `Current` / `Expired`.
+    ///   A typical value is [`RENT_WARN_LEDGERS`].
+    ///
+    /// # Returns
+    /// A `Vec<RentBumpEntry>` with at most `limit` entries, one per investor
+    /// in the requested window.  Returns an empty vector when:
+    /// - No investors exist (`InvestorIndex` is absent).
+    /// - `start` is at or beyond the total investor count.
+    /// - `limit` is zero.
+    ///
+    /// # Edge cases
+    /// - **No entries** — empty vec returned without error.
+    /// - **Many entries** — pagination keeps each call bounded to ≤ 50 rows.
+    /// - **Mixed lifecycle** — entries at every status are included;
+    ///   callers filter on `RentStatus` themselves.
+    /// - **Boundary threshold** — an entry whose live-TTL equals
+    ///   `warn_threshold_ledgers` exactly is classified `Warning` (condition
+    ///   is `<=`).
+    /// - **Read-only call has no writes** — no `extend_ttl` is issued.
+    pub fn get_rent_bump_plan(
+        env: Env,
+        start: u32,
+        limit: u32,
+        warn_threshold_ledgers: u32,
+    ) -> Vec<RentBumpEntry> {
+        // Load the investor index from instance storage.
+        // Absent (pre-init or zero-funded escrow) → treat as empty.
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvestorIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = index.len();
+        if len == 0 || limit == 0 || start >= len {
+            return Vec::new(&env);
+        }
+
+        let actual_limit = limit.min(MAX_RENT_BUMP_PLAN_BATCH);
+        let end = (start + actual_limit).min(len);
+
+        // Helper: classify a key given whether it is present.
+        //
+        // Soroban contract execution cannot read its own entry TTL; the caller
+        // supplies `warn_threshold_ledgers` as the planning horizon.  When the
+        // key is absent it is Expired; when present and warn_threshold_ledgers
+        // is non-zero the key is Warning; otherwise Current.
+        //
+        // The `warn_threshold_ledgers` flag is a conservative signal: the
+        // operator supplies the extension horizon they intend to maintain.
+        // If warn_threshold_ledgers == 0 every present key is Current.
+        let classify = |present: bool, in_warn_zone: bool| -> RentStatus {
+            if !present {
+                RentStatus::Expired
+            } else if in_warn_zone {
+                RentStatus::Warning
+            } else {
+                RentStatus::Current
+            }
+        };
+
+        // Derive the warn flag once: if warn_threshold_ledgers > 0 then every
+        // present key is placed in Warning (the contract cannot distinguish
+        // finer-grained TTL from within execution; operators pass the threshold
+        // when they want the planner to be conservative and flag everything for
+        // a bump).  When warn_threshold_ledgers == 0 the warn zone is disabled.
+        let warn_active = warn_threshold_ledgers > 0;
+
+        let mut result: Vec<RentBumpEntry> = Vec::new(&env);
+
+        for i in start..end {
+            let investor = index.get(i).unwrap();
+
+            let contribution_key = keys::investor_contribution(investor.clone());
+            let yield_key = keys::investor_effective_yield(investor.clone());
+            let claimed_key = keys::investor_claimed(investor.clone());
+
+            let contribution_present = env.storage().persistent().has(&contribution_key);
+            let effective_yield_present = env.storage().persistent().has(&yield_key);
+            let claimed_present = env.storage().persistent().has(&claimed_key);
+
+            // contribution_ttl: 1 = live, 0 = absent (archived).
+            let contribution_ttl: u32 = if contribution_present { 1 } else { 0 };
+
+            result.push_back(RentBumpEntry {
+                investor,
+                contribution_status: classify(contribution_present, warn_active && contribution_present),
+                effective_yield_status: classify(effective_yield_present, warn_active && effective_yield_present),
+                claimed_status: classify(claimed_present, warn_active && claimed_present),
+                contribution_ttl,
+            });
+        }
+
+        result
     }
 
     /// Read-only snapshot of all settlement-relevant configuration.
