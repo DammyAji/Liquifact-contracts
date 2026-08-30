@@ -1096,6 +1096,7 @@ fn validate_maturity_above_max_horizon_rejected() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::MaturityExceedsMaxHorizon,
     );
@@ -1146,6 +1147,7 @@ fn init_rejects_above_max_invoice_amount() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AmountExceedsMax,
     );
@@ -1182,6 +1184,7 @@ fn init_rejects_i128_max_amount() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AmountExceedsMax,
     );
@@ -1219,6 +1222,7 @@ fn init_rejects_zero_and_negative_amount() {
                 &None,
                 &None,
                 &None::<i64>,
+        &None::<u32>,
             ),
             EscrowError::AmountMustBePositive,
         );

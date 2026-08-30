@@ -151,6 +151,7 @@ fn test_init_unauthorized_panics() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         );
     }));
     assert!(result.is_err(), "Expected panic without auth");
@@ -187,6 +188,7 @@ fn test_reinit_same_parameters_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::EscrowAlreadyInitialized,
     );
@@ -227,6 +229,7 @@ fn test_reinit_different_admin_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::EscrowAlreadyInitialized,
     );
@@ -267,6 +270,7 @@ fn test_reinit_different_token_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::EscrowAlreadyInitialized,
     );
@@ -310,6 +314,7 @@ fn test_reinit_during_another_call_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::EscrowAlreadyInitialized,
     );
@@ -437,6 +442,7 @@ fn test_init_amount_exceeds_max_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::AmountExceedsMax,
     );
@@ -853,6 +859,7 @@ fn test_init_min_contribution_zero_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::MinContributionNotPositive,
     );
@@ -888,6 +895,7 @@ fn test_init_min_contribution_exceeds_amount_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::MinContributionExceedsAmount,
     );
@@ -1171,6 +1179,7 @@ fn try_init_with_id(env: &Env, id: &str) -> Result<(), ()> {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         );
     }));
     result.map(|_| ()).map_err(|_| ())
@@ -1568,6 +1577,7 @@ fn test_init_maturity_beyond_horizon_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::MaturityExceedsMaxHorizon,
     );
@@ -1599,6 +1609,7 @@ fn test_init_maturity_in_past_rejected() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         ),
         EscrowError::MaturityInPast,
     );

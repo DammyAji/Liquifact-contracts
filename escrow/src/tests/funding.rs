@@ -4241,6 +4241,7 @@ fn test_fund_batch_equals_n_single_funds() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         );
     }
 

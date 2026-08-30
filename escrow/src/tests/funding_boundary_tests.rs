@@ -311,6 +311,7 @@ fn test_init_negative_amount_rejected() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AmountMustBePositive,
     );
@@ -340,6 +341,7 @@ fn test_init_zero_amount_rejected() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AmountMustBePositive,
     );
@@ -397,6 +399,7 @@ fn test_init_above_max_invoice_amount_rejected() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AmountExceedsMax,
     );

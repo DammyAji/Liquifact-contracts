@@ -79,6 +79,7 @@ impl InitReentryProbe {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         );
     }
 }
@@ -169,6 +170,7 @@ fn test_init_rejects_same_parameters_different_admin_and_different_token() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AlreadyInitialized,
     );
@@ -197,6 +199,7 @@ fn test_init_rejects_same_parameters_different_admin_and_different_token() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AlreadyInitialized,
     );
@@ -225,6 +228,7 @@ fn test_init_rejects_same_parameters_different_admin_and_different_token() {
             &None,
             &None,
             &None::<i64>,
+        &None::<u32>,
         ),
         EscrowError::AlreadyInitialized,
     );

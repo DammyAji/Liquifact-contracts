@@ -605,6 +605,7 @@ fn edge_zero_values_in_settlement_math() {
                 &None,
                 &None,
                 &None::<i64>,
+        &None::<u32>,
             ),
             EscrowError::AmountMustBePositive,
         );

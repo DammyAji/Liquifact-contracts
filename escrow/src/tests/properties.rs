@@ -971,6 +971,7 @@ fn fuzz_multi_investor_fund_ordering_snapshot_once_only() {
             &None,
             &None,
             &None::<i64>,
+            &None::<u32>,
         );
 
         // Randomize investor count/order and positive amounts. Keep the sequence small so
@@ -2238,7 +2239,8 @@ proptest! {
             &None,
             &None,
             &None,
-        &None::<i64>,);
+        &None::<i64>,
+        &None::<u32>,);
 
         // Verify invariant on fresh contract.
         assert_slots_invariant(&client, "initial");
@@ -2586,7 +2588,8 @@ proptest! {
             &None,
             &None,
             &None,
-        &None::<i64>,);
+        &None::<i64>,
+        &None::<u32>,);
 
         let investors: Vec<Address> = (0..n_investors)
             .map(|_| Address::generate(&env))
