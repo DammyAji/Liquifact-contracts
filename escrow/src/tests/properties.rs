@@ -1549,7 +1549,7 @@ fn cancelled_escrow<'a>(
         &admin,
         &soroban_sdk::String::from_str(env, invoice_id),
         &sme,
-        &target,
+        &total,
         &800i64,
         &0u64,
         &token,
@@ -1561,9 +1561,6 @@ fn cancelled_escrow<'a>(
         &None,
         &None,
         &None,
-        &None,
-        &None,
-        &None::<i64>,
     );
     for (investor, amount) in contributions {
         client.fund(investor, amount);

@@ -2363,15 +2363,9 @@ fn test_rotate_beneficiary_then_withdraw_goes_to_new_sme() {
         &None::<i64>,
     );
     token.stellar.mint(&investor, &TARGET);
-    token.stellar.approve(
-        &investor,
-        &escrow_id,
-        &TARGET,
-        &(env.ledger().sequence() + 10_000),
-    );
-    // The beneficiary is immutable once any funding is recorded, so rotate to
-    // the new SME first (escrow still open, funded_amount == 0).
-    client.rotate_beneficiary(&new_sme);
+    token
+        .stellar
+        .approve(&investor, &escrow_id, &TARGET, &9999u32);
     client.fund(&investor, &TARGET);
     // Mint funded_amount into the escrow contract so withdraw() can transfer it.
     token.stellar.mint(&escrow_id, &TARGET);

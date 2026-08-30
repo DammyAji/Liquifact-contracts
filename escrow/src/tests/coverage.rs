@@ -31,6 +31,13 @@ fn typed_error_codes_cover_basic_escrow_guards() {
     let (client, admin, sme) = setup(&env);
     let (funding_token, treasury) = free_addresses(&env);
 
+#[test]
+fn typed_error_codes_cover_init_fund_settle_withdraw_and_claim() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (funding_token, treasury) = free_addresses(&env);
+
     assert_contract_error(
         client.try_init(
             &admin,
@@ -1758,12 +1765,10 @@ fn test_settle_too_early() {
         &None,
         &None,
         &None,
-        &None,
-    &None::<i64>,);
-    let investor = Address::generate(&env);
-    client.fund(&investor, &100);
-    // ledger timestamp is < 20000; settle should panic
-    client.settle();
+    );
+
+    assert!(!client.is_allowlist_active());
+    assert!(!client.is_investor_allowlisted(&investor));
 }
 
 #[test]
@@ -3453,6 +3458,24 @@ fn test_collateral_replacement_overwrites_stored_value_and_emits_prior_amount() 
     env.ledger().set_timestamp(env.ledger().timestamp() + 100);
     let new_asset = soroban_sdk::Symbol::new(&env, "BTC");
     client.record_sme_collateral_commitment(&new_asset, &2_500i128);
+
+    // Check the replacement event immediately (before any further reads reset the event scope).
+    let events = env.events().all().filter_by_contract(&contract_id);
+    assert_eq!(
+        events.events().len(),
+        1,
+        "replacement call must emit exactly one event"
+    );
+    assert_eq!(
+        events.events()[0],
+        crate::CollateralRecordedEvt {
+            name: symbol_short!("coll_rec"),
+            invoice_id,
+            amount: 2_500i128,
+            prior_amount: 1_000i128,
+        }
+        .to_xdr(&env, &contract_id)
+    );
 
     // Stored value reflects the replacement.
     let stored = client

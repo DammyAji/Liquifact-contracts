@@ -4605,7 +4605,6 @@ fn test_fund_batch_preserves_event_semantics() {
     // Verify events emitted
 
     let events = env.events().all();
-
     assert_eq!(
         events.events().len(),
         2,
