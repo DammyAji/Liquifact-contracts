@@ -395,9 +395,6 @@ pub const MAX_SETTLE_BATCH: u32 = 50;
 /// Upper bound on [`LiquifactEscrow::refund_batch`] entries to keep storage/CPU bounded.
 pub const MAX_REFUND_BATCH: u32 = 50;
 
-/// Upper bound on [`LiquifactEscrow::set_investors_allowlisted`] batch size.
-pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
-
 /// Upper bound on [`LiquifactEscrow::get_contributions`] / investor read batch size.
 pub const MAX_INVESTOR_READ_BATCH: u32 = 50;
 
@@ -732,7 +729,7 @@ pub enum EscrowError {
     NewSmeSameAsCurrent = 162,
 
     /// Attempted to accept admin role when no pending admin exists.
-    NoPendingAdmin = 85,
+    NoPendingAdmin = 86,
 
     /// The contract's funding-token balance is less than `funded_amount` at withdraw time.
     /// Funds must be custodied in this contract before the SME can pull them.
@@ -742,8 +739,6 @@ pub enum EscrowError {
     MaturityInPast = 166,
     /// [`validate_maturity_bounds`] rejected a maturity timestamp beyond the configured horizon.
     MaturityExceedsMaxHorizon = 167,
-    /// [`LiquifactEscrow::revoke_attestation_digest`] called on a non-revoked index.
-    AttestationNotRevoked = 168,
     /// [`LiquifactEscrow::update_funding_deadline`] called while escrow is not open.
     FundingDeadlineUpdateNotOpen = 169,
     /// [`LiquifactEscrow::claim_investor_payout`] computed a zero payout.
@@ -760,7 +755,7 @@ pub enum EscrowError {
     /// Inbound token transfer detected recipient balance delta underflow.
     InboundRecipientBalanceUnderflow = 175,
     /// Inbound token transfer detected recipient received amount differs from requested transfer.
-    InboundRecipientBalanceDeltaMismatch = 176,
+    InboundRecipientBalanceDeltaMismatch = 178,
 
     /// [`LiquifactEscrow::fund`] blocked while operational pause is active.
     PausedBlocksFunding = 210,
@@ -858,13 +853,13 @@ pub enum EscrowError {
     DisputeNotOpen = 247,
 
     /// [`LiquifactEscrow::execute_callback`] called from an origin address different from the registered origin context.
-    CallbackWrongOrigin = 240,
+    CallbackWrongOrigin = 253,
     /// [`LiquifactEscrow::execute_callback`] called with an invocation nonce that does not match the stored context.
-    CallbackWrongNonce = 241,
+    CallbackWrongNonce = 254,
     /// [`LiquifactEscrow::execute_callback`] called with a lifecycle phase different from the expected phase.
-    CallbackWrongPhase = 242,
+    CallbackWrongPhase = 255,
     /// [`LiquifactEscrow::execute_callback`] called with a callback context that has already been consumed (replay attempt).
-    CallbackReplayed = 243,
+    CallbackReplayed = 256,
     /// [`LiquifactEscrow::execute_callback`] or [`LiquifactEscrow::register_callback`] called after the escrow has been cancelled.
     CallbackAfterCancellation = 244,
     /// [`LiquifactEscrow::execute_callback`] called with a nonce that has no registered callback context.
@@ -1854,6 +1849,36 @@ pub struct CallbackContext {
     pub consumed: bool,
 }
 
+/// Emitted by [`LiquifactEscrow::register_callback`] when a callback context is stored.
+#[contractevent]
+pub struct CallbackRegisteredEvent {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// The external contract address authorized to execute this callback.
+    pub origin: Address,
+    /// Unique invocation nonce assigned to this callback.
+    pub nonce: u64,
+    /// Expected lifecycle phase for this callback.
+    pub phase: u32,
+}
+
+/// Emitted by [`LiquifactEscrow::execute_callback`] after a callback is consumed.
+#[contractevent]
+pub struct CallbackExecutedEvent {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// The external contract address that executed the callback.
+    pub origin: Address,
+    /// Invocation nonce of the consumed callback.
+    pub nonce: u64,
+    /// Lifecycle phase that was executed.
+    pub phase: u32,
+}
+
 // --- Events ---
 
 #[contractevent]
@@ -2120,23 +2145,6 @@ pub struct AdminProposalSuperseded {
     pub invoice_id: Symbol,
     pub previous_pending: Address,
     pub new_pending: Address,
-}
-
-/// Emitted by [`LiquifactEscrow::cancel_pending_admin`] when a pending admin proposal is cancelled.
-///
-/// Indexers and operators can monitor this event to track when nominations are retracted.
-///
-/// # Fields
-/// - `name`: hardcoded `adm_can` symbol.
-/// - `invoice_id`: escrow invoice identifier.
-/// - `cancelled_pending`: the address whose pending admin nomination was revoked.
-#[contractevent]
-pub struct AdminProposalCancelled {
-    #[topic]
-    pub name: Symbol,
-    #[topic]
-    pub invoice_id: Symbol,
-    pub cancelled_pending: Address,
 }
 
 /// Emitted by [`LiquifactEscrow::recover_admin`] when the current admin clears an
@@ -2540,21 +2548,6 @@ pub struct ContractUpgraded {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollateralPledge {
     pub invoice_id: Symbol,
-    pub amount: i128,
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-/// Emitted by clear_sme_collateral_commitment when a pledge is retired.
-///
-/// `amount` carries the value from the removed pledge record.
-#[contractevent(topics = ["collateral_cleared"])]
-pub struct CollateralClearedEvt {
-    #[topic]
-    pub invoice_id: Symbol,
-    /// The amount that was recorded in the retired pledge.
     pub amount: i128,
 }
 
@@ -6484,10 +6477,10 @@ impl LiquifactEscrow {
             }
         } else {
             ensure(&env, prev == 0, EscrowError::TieredSecondDeposit);
-            let (eff, lock) =
+            let res =
                 Self::effective_yield_for_commitment(&env, escrow.yield_bps, committed_lock_secs);
-            investor_effective_yield_bps = eff;
-            tier_lock_secs = lock;
+            investor_effective_yield_bps = res.effective_yield_bps;
+            tier_lock_secs = res.matched_lock_secs;
             let now = env.ledger().timestamp();
             claim_nb = if committed_lock_secs == 0 {
                 0u64
@@ -6503,69 +6496,6 @@ impl LiquifactEscrow {
                 );
             }
         }
-
-        escrow.funded_amount = escrow
-            .funded_amount
-            .checked_add(amount)
-            .unwrap_or_else(|| fail(&env, EscrowError::FundedAmountOverflow));
-
-        let mut next_status = escrow.status;
-        let mut snapshot_to_write = None;
-        if escrow.status == 0 && escrow.funded_amount >= escrow.funding_target {
-            next_status = 1;
-            if !env.storage().instance().has(&DataKey::FundingCloseSnapshot) {
-                snapshot_to_write = Some(FundingCloseSnapshot {
-                    total_principal: escrow.funded_amount,
-                    funding_target: escrow.funding_target,
-                    closed_at_ledger_timestamp: env.ledger().timestamp(),
-                    closed_at_ledger_sequence: env.ledger().sequence(),
-                });
-            }
-        }
-
-        // 2. require_auth checks
-        investor.require_auth();
-        escrow.payer.require_auth();
-
-        // 3. Storage writes
-        Self::set_persistent_investor_contribution(&env, investor.clone(), new_contribution);
-
-        if simple_fund {
-            if prev == 0 {
-                Self::set_persistent_investor_effective_yield(
-                    &env,
-                    investor.clone(),
-                    escrow.yield_bps,
-                );
-                Self::set_persistent_investor_claim_not_before(&env, investor.clone(), 0u64);
-                YieldResolution {
-                    effective_yield_bps: escrow.yield_bps,
-                    matched_lock_secs: 0,
-                }
-            } else {
-                // Returning investor: yield was set on first deposit; read it for the event.
-                // If prev > 0, preserve existing effective yield and claim lock.
-                // Read stored yield for the event (falls back to escrow default for new investors).
-                YieldResolution {
-                    effective_yield_bps: Self::get_persistent_investor_effective_yield(
-                        &env,
-                        investor.clone(),
-                    )
-                    .unwrap_or(escrow.yield_bps),
-                    matched_lock_secs: 0,
-                }
-            }
-        } else {
-            Self::set_persistent_investor_effective_yield(
-                &env,
-                investor.clone(),
-                investor_effective_yield_bps,
-            );
-            Self::set_persistent_investor_claim_not_before(&env, investor.clone(), claim_nb);
-            res
-        };
-        let investor_effective_yield_bps = resolution.effective_yield_bps;
-        let tier_lock_secs = resolution.matched_lock_secs;
 
         escrow.funded_amount = escrow
             .funded_amount
@@ -6593,6 +6523,24 @@ impl LiquifactEscrow {
 
         Self::set_persistent_investor_contribution(&env, investor.clone(), new_contribution);
 
+        if simple_fund {
+            if prev == 0 {
+                Self::set_persistent_investor_effective_yield(
+                    &env,
+                    investor.clone(),
+                    escrow.yield_bps,
+                );
+                Self::set_persistent_investor_claim_not_before(&env, investor.clone(), 0u64);
+            }
+        } else {
+            Self::set_persistent_investor_effective_yield(
+                &env,
+                investor.clone(),
+                investor_effective_yield_bps,
+            );
+            Self::set_persistent_investor_claim_not_before(&env, investor.clone(), claim_nb);
+        }
+
         if prev == 0 {
             env.storage().instance().set(
                 &DataKey::UniqueFunderCount,
@@ -6619,7 +6567,7 @@ impl LiquifactEscrow {
         #[cfg(any(test, feature = "testutils"))]
         register_mock_token_if_needed(&env, &token_addr);
 
-        external_calls::transfer_into_escrow_with_balance_checks(
+        external_calls::transfer_funding_token_inbound_with_balance_checks(
             &env,
             &token_addr,
             &investor,
@@ -6634,7 +6582,6 @@ impl LiquifactEscrow {
             amount,
             funded_amount: escrow.funded_amount,
             status: escrow.status,
-            // Locals set at write time; no post-write storage reads required.
             investor_effective_yield_bps,
             tier_lock_secs,
         }
@@ -6643,12 +6590,6 @@ impl LiquifactEscrow {
         escrow
     }
 
-    /// Closes funding early for an under-funded invoice, transitioning the escrow to a settleable state.
-    ///
-    /// # Authorization
-    /// The configured **SME** address must authorize this call.
-    ///
-    /// Blocked while [`DataKey::LegalHold`] is active.
     /// Closes funding early for an under-funded invoice, transitioning the escrow to a settleable state.
     ///
     /// # Authorization
