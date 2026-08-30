@@ -4289,8 +4289,14 @@ impl LiquifactEscrow {
 
             result.push_back(RentBumpEntry {
                 investor,
-                contribution_status: classify(contribution_present, warn_active && contribution_present),
-                effective_yield_status: classify(effective_yield_present, warn_active && effective_yield_present),
+                contribution_status: classify(
+                    contribution_present,
+                    warn_active && contribution_present,
+                ),
+                effective_yield_status: classify(
+                    effective_yield_present,
+                    warn_active && effective_yield_present,
+                ),
                 claimed_status: classify(claimed_present, warn_active && claimed_present),
                 contribution_ttl,
             });
