@@ -231,9 +231,7 @@ pub struct CloseMetadata {
 #[contractevent]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloseFinalizedEvt {
-    CloseFinalized {
-        metadata: CloseMetadata,
-    },
+    CloseFinalized { metadata: CloseMetadata },
 }
 
 /// Storage key that marks the escrow as closed (one-shot flag).
@@ -256,7 +254,10 @@ impl LiquifactEscrow {
     /// - Stores [`CloseMetadata`].
     /// - Emits a [`CloseFinalizedEvt`].
     pub fn close_escrow(env: Env) {
-        let escrow: InvoiceEscrow = env.storage().instance().get(&DataKey::Escrow)
+        let escrow: InvoiceEscrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow)
             .unwrap_or_else(|| panic_with_error!(&env, CloseError::NotInitialized));
         let admin = escrow.admin;
         admin.require_auth();
@@ -265,7 +266,10 @@ impl LiquifactEscrow {
             panic_with_error!(&env, CloseError::AlreadyClosed);
         }
 
-        let funding_token: Address = env.storage().instance().get(&DataKey::FundingToken)
+        let funding_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FundingToken)
             .unwrap_or_else(|| panic_with_error!(&env, CloseError::NotInitialized));
         let token = TokenClient::new(&env, &funding_token);
         let balance = token.balance(&env.current_contract_address());
@@ -283,8 +287,12 @@ impl LiquifactEscrow {
             sequence: env.ledger().sequence(),
         };
 
-        env.storage().instance().set(&Symbol::new(&env, CLOSED_KEY), &true);
-        env.storage().instance().set(&Symbol::new(&env, CLOSE_METADATA_KEY), &metadata);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, CLOSED_KEY), &true);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, CLOSE_METADATA_KEY), &metadata);
 
         env.events().publish(CloseFinalizedEvt::CloseFinalized {
             metadata: metadata.clone(),
@@ -293,10 +301,11 @@ impl LiquifactEscrow {
 
     /// Returns the close metadata if the escrow has been closed.
     pub fn get_closure_metadata(env: Env) -> Option<CloseMetadata> {
-        env.storage().instance().get(&Symbol::new(&env, CLOSE_METADATA_KEY))
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, CLOSE_METADATA_KEY))
     }
 }
-
 
 /// Default maximum maturity horizon in seconds (~5 years) when no explicit horizon is configured.
 pub const DEFAULT_MATURITY_MAX_HORIZON_SECS: u64 = 157_680_000; // ~5 years (365.25 * 24 * 3600 * 5)
@@ -2358,10 +2367,8 @@ impl LiquifactEscrow {
             .get(&FeeScheduleStorageKey::Pending);
         if let Some(p) = pending {
             if p.activation_ledger <= current_ledger {
-                let previous: Option<FeeSchedule> = env
-                    .storage()
-                    .instance()
-                    .get(&FeeScheduleStorageKey::Active);
+                let previous: Option<FeeSchedule> =
+                    env.storage().instance().get(&FeeScheduleStorageKey::Active);
                 env.storage()
                     .instance()
                     .set(&FeeScheduleStorageKey::Active, &p);
@@ -2380,10 +2387,8 @@ impl LiquifactEscrow {
     /// Returns the active fee schedule for the current ledger, computing any
     /// not-yet-promoted boundary activation on the fly.
     pub fn get_active_fee_schedule(env: Env) -> Option<FeeSchedule> {
-        let active: Option<FeeSchedule> = env
-            .storage()
-            .instance()
-            .get(&FeeScheduleStorageKey::Active);
+        let active: Option<FeeSchedule> =
+            env.storage().instance().get(&FeeScheduleStorageKey::Active);
         let pending: Option<FeeSchedule> = env
             .storage()
             .instance()
@@ -2408,10 +2413,8 @@ impl LiquifactEscrow {
 
     /// Returns the previously active fee schedule after a boundary activation.
     pub fn get_previous_fee_schedule(env: Env) -> Option<FeeSchedule> {
-        let active: Option<FeeSchedule> = env
-            .storage()
-            .instance()
-            .get(&FeeScheduleStorageKey::Active);
+        let active: Option<FeeSchedule> =
+            env.storage().instance().get(&FeeScheduleStorageKey::Active);
         let pending: Option<FeeSchedule> = env
             .storage()
             .instance()
