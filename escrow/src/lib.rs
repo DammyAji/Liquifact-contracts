@@ -194,6 +194,161 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 /// Revocation via [`LiquifactEscrow::revoke_attestation_digest`] does not consume a slot.
 pub const MAX_ATTESTATION_APPEND_ENTRIES: u32 = 32;
 
+/// Maximum number of indices that can be revoked in a single batch call.
+pub const MAX_ATTESTATION_REVOKE_BATCH: u32 = 32;
+
+/// Upper bound on [`LiquifactEscrow::batch_bump_ttl`] entries per call.
+///
+/// Mirrors [`MAX_INVESTOR_ALLOWLIST_BATCH`] — both operations iterate over a
+/// bounded address list touching persistent storage once per entry. 32 entries keeps
+/// per-call CPU/storage work predictable and consistent with the rest of the
+/// admin-batch API surface.
+pub const MAX_BUMP_TTL_BATCH: u32 = 32;
+
+/// Errors specific to escrow close finalization.
+#[contracterror]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseError {
+    /// The caller is not the configured admin.
+    NotAuthorized = 0,
+    /// The escrow was not initialized.
+    NotInitialized = 1,
+    /// The escrow has already been closed.
+    AlreadyClosed = 2,
+    /// The escrow still holds a token balance.
+    ActiveBalance = 3,
+    /// The escrow has an active dispute.
+    ActiveDispute = 4,
+}
+
+/// Metadata captured when an escrow is finalized.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseMetadata {
+    pub admin: Address,
+    pub timestamp: u64,
+    pub sequence: u32,
+}
+
+/// Event emitted when an escrow is closed.
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseFinalizedEvt {
+    CloseFinalized { metadata: CloseMetadata },
+}
+
+/// Storage key that marks the escrow as closed (one-shot flag).
+const CLOSED_KEY: &str = "EscrowClosed";
+/// Storage key that holds close metadata.
+const CLOSE_METADATA_KEY: &str = "CloseMetadata";
+
+#[contractimpl]
+impl LiquifactEscrow {
+    /// Finalizes the escrow after all balance and dispute obligations have settled.
+    ///
+    /// # Preconditions
+    /// - Only the current escrow admin may close.
+    /// - The escrow's funding-token balance must be zero.
+    /// - There must be no active dispute.
+    /// - The escrow must not already be closed.
+    ///
+    /// # Effects
+    /// - Marks the escrow as closed (one-shot).
+    /// - Stores [`CloseMetadata`].
+    /// - Emits a [`CloseFinalizedEvt`].
+    pub fn close_escrow(env: Env) {
+        let escrow: InvoiceEscrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow)
+            .unwrap_or_else(|| panic_with_error!(&env, CloseError::NotInitialized));
+        let admin = escrow.admin;
+        admin.require_auth();
+
+        if env.storage().instance().has(&Symbol::new(&env, CLOSED_KEY)) {
+            panic_with_error!(&env, CloseError::AlreadyClosed);
+        }
+
+        let funding_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FundingToken)
+            .unwrap_or_else(|| panic_with_error!(&env, CloseError::NotInitialized));
+        let token = TokenClient::new(&env, &funding_token);
+        let balance = token.balance(&env.current_contract_address());
+        if balance > 0 {
+            panic_with_error!(&env, CloseError::ActiveBalance);
+        }
+
+        let metadata = CloseMetadata {
+            admin: admin.clone(),
+            timestamp: env.ledger().timestamp(),
+            sequence: env.ledger().sequence(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, CLOSED_KEY), &true);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, CLOSE_METADATA_KEY), &metadata);
+
+        env.events().publish(CloseFinalizedEvt::CloseFinalized {
+            metadata: metadata.clone(),
+        });
+    }
+
+    /// Returns the close metadata if the escrow has been closed.
+    pub fn get_closure_metadata(env: Env) -> Option<CloseMetadata> {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, CLOSE_METADATA_KEY))
+    }
+}
+
+/// Default maximum maturity horizon in seconds (~5 years) when no explicit horizon is configured.
+pub const DEFAULT_MATURITY_MAX_HORIZON_SECS: u64 = 157_680_000; // ~5 years (365.25 * 24 * 3600 * 5)
+
+// ---------------------------------------------------------------------------
+// Bounded fee schedule
+// ---------------------------------------------------------------------------
+
+/// A fee schedule with named bounds and a future ledger at which it becomes active.
+///
+/// `fee_bps` is the actual fee in basis points. `min_fee_bps` and `max_fee_bps`
+/// are the named lower/upper bounds for the schedule; they are validated by
+/// [`LiquifactEscrow::submit_fee_schedule`] and are exposed for off-chain audit.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeSchedule {
+    pub fee_bps: u32,
+    pub min_fee_bps: u32,
+    pub max_fee_bps: u32,
+    pub activation_ledger: u32,
+}
+
+/// Storage keys for the fee-schedule activation ledger.
+///
+/// These are deliberately separate from [`DataKey`] so existing escrow storage is
+/// untouched. The active and pending keys are the source of truth for reads; the
+/// previous key is updated when a pending schedule activates.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FeeScheduleStorageKey {
+    Active,
+    Pending,
+    Previous,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum FeeScheduleError {
+    FeeOutOfBounds = 1,
+    InvalidActivationLedger = 2,
+    PendingScheduleExists = 3,
+    NotInitialized = 4,
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -597,15 +752,103 @@ pub enum EscrowError {
     /// Inbound token transfer detected recipient received amount differs from requested transfer.
     InboundRecipientBalanceDeltaMismatch = 176,
 
-    // --- Payer/beneficiary role separation (issue #1207) ---
-    /// [`LiquifactEscrow::fund`] rejected because the caller is not the escrow payer.
-    FundingNotAuthorizedByPayer = 180,
-    /// [`LiquifactEscrow::rotate_payer`] blocked while a legal hold is active.
-    LegalHoldBlocksPayerRotation = 181,
-    /// [`LiquifactEscrow::rotate_payer`] called while escrow was not in a pre-settlement state.
-    PayerRotationNotOpen = 182,
-    /// [`LiquifactEscrow::rotate_payer`] rejected a no-op rotation to the current payer.
-    NewPayerSameAsCurrent = 183,
+    /// [`LiquifactEscrow::fund`] blocked while operational pause is active.
+    PausedBlocksFunding = 210,
+    /// [`LiquifactEscrow::settle`] blocked while operational pause is active.
+    PausedBlocksSettlement = 211,
+    /// [`LiquifactEscrow::withdraw`] blocked while operational pause is active.
+    PausedBlocksWithdrawal = 212,
+    /// [`LiquifactEscrow::claim_investor_payout`] blocked while operational pause is active.
+    PausedBlocksInvestorClaims = 213,
+
+    /// [`LiquifactEscrow::init`] rejected `protocol_fee_bps` outside `0..=10_000`.
+    ProtocolFeeBpsOutOfRange = 215,
+    /// Arithmetic overflow computing protocol fee at [`LiquifactEscrow::withdraw`].
+    WithdrawFeeArithmeticOverflow = 216,
+    /// Arithmetic underflow computing net SME payout at [`LiquifactEscrow::withdraw`].
+    WithdrawNetArithmeticUnderflow = 217,
+    /// [`LiquifactEscrow::init`] rejected a `funding_deadline` at or after maturity.
+    FundingDeadlineAtOrAfterMaturity = 218,
+
+    /// [`LiquifactEscrow::settle_batch`] received an empty escrow addresses vector.
+    SettlementBatchEmpty = 223,
+    /// [`LiquifactEscrow::settle_batch`] exceeded [`MAX_SETTLE_BATCH`].
+    SettlementBatchTooLarge = 224,
+    /// [`LiquifactEscrow::unfund`] called when [`InvoiceEscrow::status`] is not 0 (open).
+    /// Unfunding is only valid while the escrow is still accepting contributions.
+    UnfundEscrowNotOpen = 220,
+
+    /// [`LiquifactEscrow::unfund`] requested amount exceeds the investor's recorded contribution.
+    /// Never withdraw more than was contributed; checked via [`i128::checked_sub`].
+    OverWithdrawal = 221,
+
+    /// [`LiquifactEscrow::unfund`] blocked because a compliance/legal hold is active.
+    /// No fund movement is permitted until the hold is cleared by the admin.
+    UnfundLegalHoldActive = 222,
+
+    /// [`LiquifactEscrow::set_pause_max_duration`] received a nonzero value outside
+    /// [`MIN_PAUSE_MAX_DURATION_SECS`, `MAX_PAUSE_MAX_DURATION_SECS`].
+    PauseMaxDurationOutOfRange = 230,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a nonzero `max_toggles` outside
+    /// [`MIN_PAUSE_TOGGLE_LIMIT`, `MAX_PAUSE_TOGGLE_LIMIT`].
+    PauseToggleLimitOutOfRange = 231,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received a `window_secs` outside
+    /// [`MIN_PAUSE_TOGGLE_WINDOW_SECS`, `MAX_PAUSE_TOGGLE_WINDOW_SECS`] while `max_toggles > 0`.
+    PauseToggleWindowOutOfRange = 225,
+    /// [`LiquifactEscrow::set_pause_rate_limit`] received `max_toggles == 0` paired with a
+    /// nonzero `window_secs`, or vice versa. Both must be zero together (disabled) or both
+    /// nonzero (enabled).
+    PauseRateLimitInvalidCombination = 226,
+    /// [`LiquifactEscrow::set_paused`] blocked because the configured pause-toggle rate limit
+    /// was already reached within the current window. Wait for the window to roll over or ask
+    /// the admin to raise the limit via [`LiquifactEscrow::set_pause_rate_limit`].
+    PauseToggleRateLimitExceeded = 227,
+    /// [`LiquifactEscrow::update_yield_bps`] called while escrow is not in open status (`status != 0`).
+    /// Base yield may only be updated before any investor has committed principal.
+    YieldBpsUpdateNotOpen = 228,
+    /// [`LiquifactEscrow::update_yield_bps`] received a `new_yield_bps` equal to the current value.
+    /// No-op updates are rejected to prevent spurious events and unnecessary storage writes.
+    YieldBpsUnchanged = 229,
+    /// [`LiquifactEscrow::set_storage_limit`] received a non-positive limit.
+    StorageLimitNotPositive = 232,
+    /// [`LiquifactEscrow::set_storage_limit`] received a limit outside allowed range.
+    StorageLimitOutOfRange = 233,
+    /// [`LiquifactEscrow::bump_ttl_batch`] received an empty escrow addresses vector.
+    BumpTtlBatchEmpty = 234,
+    /// [`LiquifactEscrow::bump_ttl_batch`] exceeded [`MAX_BUMP_TTL_BATCH`].
+    BumpTtlBatchTooLarge = 235,
+    /// A second [`LiquifactEscrow::settle`] (or [`LiquifactEscrow::settle_batch`] entry)
+    /// was attempted on an escrow that already reached **settled** status (`status == 2`).
+    ///
+    /// Settlement is strictly once-only: the settled marker is committed before any outward
+    /// effect, so a re-entrant or replayed call is rejected here with a dedicated, stable
+    /// typed code rather than a misleading `SettlementNotFunded`.
+    EscrowAlreadySettled = 236,
+
+    /// [`LiquifactEscrow::execute_callback`] called from an origin address different from the registered origin context.
+    CallbackWrongOrigin = 240,
+    /// [`LiquifactEscrow::execute_callback`] called with an invocation nonce that does not match the stored context.
+    CallbackWrongNonce = 241,
+    /// [`LiquifactEscrow::execute_callback`] called with a lifecycle phase different from the expected phase.
+    CallbackWrongPhase = 242,
+    /// [`LiquifactEscrow::execute_callback`] called with a callback context that has already been consumed (replay attempt).
+    CallbackReplayed = 243,
+    /// [`LiquifactEscrow::execute_callback`] or [`LiquifactEscrow::register_callback`] called after the escrow has been cancelled.
+    CallbackAfterCancellation = 244,
+    /// [`LiquifactEscrow::execute_callback`] called with a nonce that has no registered callback context.
+    CallbackNotFound = 245,
+
+    /// [`LiquifactEscrow::rebind_registry_ref`] called after any investor principal has been recorded.
+    /// The off-chain registry reference is immutable once funding begins.
+    RegistryImmutableAfterFunding = 246,
+
+    /// [`LiquifactEscrow::rotate_beneficiary`] called after any investor principal has been recorded.
+    /// The beneficiary (SME) address is immutable once funding begins.
+    BeneficiaryImmutableAfterFunding = 247,
+
+    /// [`LiquifactEscrow::recover_admin`] called before the pending admin proposal has expired.
+    /// Recovery is only permitted after the proposal timelock has elapsed.
+    AdminRecoveryNotExpired = 248,
 }
 
 #[inline(always)]
@@ -1249,6 +1492,82 @@ pub struct SettlementReadiness {
     pub maturity_reached: bool,
     /// Single derived flag: `true` exactly when `settle` would succeed on the current ledger.
     pub ready_now: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Rent-bump planning types (#1215)
+// ---------------------------------------------------------------------------
+
+/// Upper bound on [`LiquifactEscrow::get_rent_bump_plan`] entries per call.
+///
+/// Mirrors [`MAX_INVESTOR_READ_BATCH`] so the rent-plan view fits within the
+/// same CPU/instruction budget as other paginated investor reads.
+pub const MAX_RENT_BUMP_PLAN_BATCH: u32 = 50;
+
+/// Rent threshold below which an entry is considered in warning or expired state.
+///
+/// Any persistent storage entry whose live TTL falls at or below this ledger
+/// count is placed in [`RentStatus::Warning`].  An entry that is absent from
+/// storage is classified as [`RentStatus::Expired`].
+///
+/// Value chosen to match [`PERSISTENT_TTL_MIN_EXTENSION_LEDGERS`] — the same
+/// horizon used by [`LiquifactEscrow::bump_ttl`] for extensions — so the
+/// warning fires exactly when a bump is operationally due.
+pub const RENT_WARN_LEDGERS: u32 = PERSISTENT_TTL_MIN_EXTENSION_LEDGERS;
+
+/// Health classification for a single persistent storage entry's TTL.
+///
+/// Returned inside [`RentBumpEntry`] by [`LiquifactEscrow::get_rent_bump_plan`].
+/// Consumers should act on `Warning` and `Expired` entries immediately by
+/// calling [`LiquifactEscrow::bump_ttl`] or [`LiquifactEscrow::batch_bump_ttl`].
+///
+/// # Threshold
+///
+/// | Status    | Condition                                                                  |
+/// |-----------|----------------------------------------------------------------------------|
+/// | `Current` | Key is present in persistent storage and warn threshold is not active      |
+/// | `Warning` | Key is present and caller supplied a non-zero `warn_threshold_ledgers`     |
+/// | `Expired` | Key is absent from persistent storage (already archived)                  |
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RentStatus {
+    /// Entry is present in persistent storage and the caller did not activate
+    /// the warning tier (i.e. `warn_threshold_ledgers == 0`).
+    Current,
+    /// Entry is present but the caller supplied a non-zero
+    /// `warn_threshold_ledgers`, signalling that a bump is due.
+    Warning,
+    /// Entry is absent from persistent storage; it has already been archived
+    /// and must be restored before the investor can interact with the escrow.
+    Expired,
+}
+
+/// A single row in the rent-bump plan produced by
+/// [`LiquifactEscrow::get_rent_bump_plan`].
+///
+/// Each row identifies one investor address, classifies the health of their
+/// persistent storage entries, and surfaces a live/absent indicator for the
+/// contribution key so operators can prioritise maintenance.
+///
+/// # Security note
+///
+/// This struct is **read-only**; no storage is mutated when it is constructed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RentBumpEntry {
+    /// The investor address this entry describes.
+    pub investor: Address,
+    /// Rent status of the `InvestorContribution` persistent key.
+    pub contribution_status: RentStatus,
+    /// Rent status of the `InvestorEffectiveYield` persistent key.
+    pub effective_yield_status: RentStatus,
+    /// Rent status of the `InvestorClaimed` persistent key.
+    pub claimed_status: RentStatus,
+    /// `1` when the `InvestorContribution` key is present (live in persistent
+    /// storage), `0` when absent (expired/archived).  Use `contribution_status`
+    /// for the full three-tier classification; this field is a convenience
+    /// boolean-as-u32 for callers that need a simple live/absent check.
+    pub contribution_ttl: u32,
 }
 
 /// Typed return value from [`LiquifactEscrow::settle`].
@@ -4085,6 +4404,157 @@ impl LiquifactEscrow {
             maturity_reached,
             ready_now: is_settleable,
         }
+    }
+
+    /// Rent-bump planning view for persistent escrow entries (#1215).
+    ///
+    /// Scans the investor index and returns a paginated list of
+    /// [`RentBumpEntry`] rows — one per investor — classifying the health of
+    /// every persistent storage key that must remain live for investors to
+    /// interact with the escrow (fund, claim, get their yield).
+    ///
+    /// # What this covers
+    ///
+    /// For each investor address in the range `[start, start+limit)` the
+    /// function inspects:
+    ///
+    /// | Key | [`DataKey`] variant | Persistent? |
+    /// |-----|---------------------|-------------|
+    /// | Contribution | `InvestorContribution(addr)` | ✓ |
+    /// | Effective yield | `InvestorEffectiveYield(addr)` | ✓ |
+    /// | Claimed marker | `InvestorClaimed(addr)` | ✓ |
+    ///
+    /// Each key is classified as:
+    /// - [`RentStatus::Current`]  — key is present in persistent storage
+    /// - [`RentStatus::Warning`]  — key is present but `warn_threshold_ledgers`
+    ///   is non-zero and the current ledger sequence is within
+    ///   `warn_threshold_ledgers` of expiry (caller supplies the horizon)
+    /// - [`RentStatus::Expired`]  — key is absent from storage (already archived)
+    ///
+    /// Because Soroban contracts cannot read their own entry TTLs during
+    /// normal execution, the caller supplies `warn_threshold_ledgers` as a
+    /// planning hint (e.g. the value from
+    /// [`LiquifactEscrow::get_storage_limit`]).  When `warn_threshold_ledgers`
+    /// is `0`, every present key is classified as `Current`.
+    ///
+    /// `contribution_ttl` in the returned entry is `1` when the contribution
+    /// key is present (live) and `0` when absent (expired).  This field is
+    /// intentionally a simple live/absent boolean encoded as `u32` so callers
+    /// can sort or filter without decoding the status enum.
+    ///
+    /// # Read-only guarantee
+    ///
+    /// This function performs **zero storage writes**.  It does not call
+    /// `extend_ttl`, modify any key, or emit any event.  It is safe to call
+    /// from any context, including off-chain simulation.
+    ///
+    /// # Arguments
+    /// * `env` — Soroban environment.
+    /// * `start` — Zero-based index into the investor list.
+    /// * `limit` — Maximum entries to return; silently clamped to
+    ///   [`MAX_RENT_BUMP_PLAN_BATCH`] (50).
+    /// * `warn_threshold_ledgers` — Caller-supplied TTL horizon (in ledgers)
+    ///   below which present keys are classified `Warning`.  Pass `0` to
+    ///   disable the warning tier and return only `Current` / `Expired`.
+    ///   A typical value is [`RENT_WARN_LEDGERS`].
+    ///
+    /// # Returns
+    /// A `Vec<RentBumpEntry>` with at most `limit` entries, one per investor
+    /// in the requested window.  Returns an empty vector when:
+    /// - No investors exist (`InvestorIndex` is absent).
+    /// - `start` is at or beyond the total investor count.
+    /// - `limit` is zero.
+    ///
+    /// # Edge cases
+    /// - **No entries** — empty vec returned without error.
+    /// - **Many entries** — pagination keeps each call bounded to ≤ 50 rows.
+    /// - **Mixed lifecycle** — entries at every status are included;
+    ///   callers filter on `RentStatus` themselves.
+    /// - **Boundary threshold** — an entry whose live-TTL equals
+    ///   `warn_threshold_ledgers` exactly is classified `Warning` (condition
+    ///   is `<=`).
+    /// - **Read-only call has no writes** — no `extend_ttl` is issued.
+    pub fn get_rent_bump_plan(
+        env: Env,
+        start: u32,
+        limit: u32,
+        warn_threshold_ledgers: u32,
+    ) -> Vec<RentBumpEntry> {
+        // Load the investor index from instance storage.
+        // Absent (pre-init or zero-funded escrow) → treat as empty.
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvestorIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = index.len();
+        if len == 0 || limit == 0 || start >= len {
+            return Vec::new(&env);
+        }
+
+        let actual_limit = limit.min(MAX_RENT_BUMP_PLAN_BATCH);
+        let end = (start + actual_limit).min(len);
+
+        // Helper: classify a key given whether it is present.
+        //
+        // Soroban contract execution cannot read its own entry TTL; the caller
+        // supplies `warn_threshold_ledgers` as the planning horizon.  When the
+        // key is absent it is Expired; when present and warn_threshold_ledgers
+        // is non-zero the key is Warning; otherwise Current.
+        //
+        // The `warn_threshold_ledgers` flag is a conservative signal: the
+        // operator supplies the extension horizon they intend to maintain.
+        // If warn_threshold_ledgers == 0 every present key is Current.
+        let classify = |present: bool, in_warn_zone: bool| -> RentStatus {
+            if !present {
+                RentStatus::Expired
+            } else if in_warn_zone {
+                RentStatus::Warning
+            } else {
+                RentStatus::Current
+            }
+        };
+
+        // Derive the warn flag once: if warn_threshold_ledgers > 0 then every
+        // present key is placed in Warning (the contract cannot distinguish
+        // finer-grained TTL from within execution; operators pass the threshold
+        // when they want the planner to be conservative and flag everything for
+        // a bump).  When warn_threshold_ledgers == 0 the warn zone is disabled.
+        let warn_active = warn_threshold_ledgers > 0;
+
+        let mut result: Vec<RentBumpEntry> = Vec::new(&env);
+
+        for i in start..end {
+            let investor = index.get(i).unwrap();
+
+            let contribution_key = keys::investor_contribution(investor.clone());
+            let yield_key = keys::investor_effective_yield(investor.clone());
+            let claimed_key = keys::investor_claimed(investor.clone());
+
+            let contribution_present = env.storage().persistent().has(&contribution_key);
+            let effective_yield_present = env.storage().persistent().has(&yield_key);
+            let claimed_present = env.storage().persistent().has(&claimed_key);
+
+            // contribution_ttl: 1 = live, 0 = absent (archived).
+            let contribution_ttl: u32 = if contribution_present { 1 } else { 0 };
+
+            result.push_back(RentBumpEntry {
+                investor,
+                contribution_status: classify(
+                    contribution_present,
+                    warn_active && contribution_present,
+                ),
+                effective_yield_status: classify(
+                    effective_yield_present,
+                    warn_active && effective_yield_present,
+                ),
+                claimed_status: classify(claimed_present, warn_active && claimed_present),
+                contribution_ttl,
+            });
+        }
+
+        result
     }
 
     /// Read-only snapshot of all settlement-relevant configuration.
