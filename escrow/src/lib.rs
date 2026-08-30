@@ -232,9 +232,12 @@ pub struct CloseMetadata {
 
 /// Event emitted when an escrow is closed.
 #[contractevent]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CloseFinalizedEvt {
-    CloseFinalized { metadata: CloseMetadata },
+pub struct CloseFinalizedEvt {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub metadata: CloseMetadata,
 }
 
 /// Storage key that marks the escrow as closed (one-shot flag).
@@ -280,6 +283,10 @@ impl LiquifactEscrow {
             panic_with_error!(&env, CloseError::ActiveBalance);
         }
 
+        if Self::legal_hold_active(&env) {
+            panic_with_error!(&env, CloseError::ActiveDispute);
+        }
+
         let metadata = CloseMetadata {
             admin: admin.clone(),
             timestamp: env.ledger().timestamp(),
@@ -293,9 +300,12 @@ impl LiquifactEscrow {
             .instance()
             .set(&Symbol::new(&env, CLOSE_METADATA_KEY), &metadata);
 
-        env.events().publish(CloseFinalizedEvt::CloseFinalized {
-            metadata: metadata.clone(),
-        });
+        CloseFinalizedEvt {
+            name: symbol_short!("esc_cls"),
+            invoice_id: escrow.invoice_id.clone(),
+            metadata,
+        }
+        .publish(&env);
     }
 
     /// Returns the close metadata if the escrow has been closed.
@@ -860,16 +870,16 @@ pub enum EscrowError {
     /// [`LiquifactEscrow::execute_callback`] called with a nonce that has no registered callback context.
     CallbackNotFound = 245,
 
-    /// [`LiquifactEscrow::rebind_registry_ref`] called after any investor principal has been recorded.
-    /// The off-chain registry reference is immutable once funding begins.
+    /// [`LiquifactEscrow::rebind_registry_ref`] rejected because principal has already been
+    /// recorded for this escrow (`funded_amount != 0`). The off-chain registry hint may only
+    /// be rebound before any investor has committed funds.
     RegistryImmutableAfterFunding = 246,
-
-    /// [`LiquifactEscrow::rotate_beneficiary`] called after any investor principal has been recorded.
-    /// The beneficiary (SME) address is immutable once funding begins.
+    /// [`LiquifactEscrow::rotate_beneficiary`] rejected because principal has already been
+    /// recorded for this escrow (`funded_amount != 0`). The payout destination may only be
+    /// rotated before any investor has committed funds, preserving auditability.
     BeneficiaryImmutableAfterFunding = 247,
-
-    /// [`LiquifactEscrow::recover_admin`] called before the pending admin proposal has expired.
-    /// Recovery is only permitted after the proposal timelock has elapsed.
+    /// [`LiquifactEscrow::recover_admin`] rejected because [`DataKey::PendingAdminExpiry`]
+    /// has not yet elapsed (or is unexpectedly absent while a proposal is pending).
     AdminRecoveryNotExpired = 248,
 }
 
@@ -1057,8 +1067,10 @@ pub(crate) fn is_terminal_status(status: u32) -> bool {
 /// This is a **predicate**, not a guard. Callers that need to *enforce* the pre-settlement
 /// precondition must wrap it in
 /// `ensure(&env, is_pre_settlement_status(status), error)`.
+// Not yet wired to a call site (see doc comment above); kept as the documented, centralised
+// predicate for the day a caller needs it rather than re-deriving `matches!(status, 0 | 1)`.
 #[inline(always)]
-#[allow(dead_code)] // used only from tests (coverage.rs); keep for API symmetry.
+#[allow(dead_code)]
 pub(crate) fn is_pre_settlement_status(status: u32) -> bool {
     matches!(status, 0 | 1)
 }
@@ -8405,6 +8417,9 @@ mod test_allowlist_tests;
 
 #[cfg(test)]
 mod callback_binding_tests;
+
+#[cfg(test)]
+mod invariant_harness_tests;
 
 /// Default starting balance assigned to any address that has never been seen by the
 /// [`DefaultMockToken`] contract.
