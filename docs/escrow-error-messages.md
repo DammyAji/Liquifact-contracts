@@ -15,7 +15,8 @@ code/name summary only.
 | `LegalHoldBlocksPartialSettle` | 201 | A legal hold is active when `partial_settle` is called. |
 | `PartialSettleNotOpen` | 202 | `partial_settle` called while escrow status is not `Open` (0). |
 | `LegalHoldBlocksSettlement` | 120 | A legal hold is active when `settle` is called. |
-| `SettlementNotFunded` | 121 | `settle` called before the escrow reached `Funded` status (1). |
+| `SettlementNotFunded` | 121 | `settle` called while the escrow is not in the `Funded` state (1) and not already `Settled` (2). For an already-settled escrow see `EscrowAlreadySettled` (236). |
+| `EscrowAlreadySettled` | 236 | `settle` (or a `settle_batch` entry) called on an escrow already in the `Settled` state (2). Settlement is strictly once-only. |
 | `MaturityNotReached` | 122 | `settle` called before the configured maturity timestamp. |
 | `LegalHoldBlocksWithdrawal` | 123 | A legal hold is active when `withdraw` is called. |
 | `WithdrawalNotFunded` | 124 | `withdraw` called before the escrow reached `Funded` status (1). |
@@ -32,6 +33,19 @@ code/name summary only.
 | `WithdrawFeeArithmeticOverflow` | 216 | `funded_amount * fee_bps` overflowed `i128` while computing the protocol fee at `withdraw`. |
 | `WithdrawNetArithmeticUnderflow` | 217 | `funded_amount - fee` underflowed while computing the net SME payout at `withdraw`. |
 
+## Cross-Contract Callback Errors
+
+Codes raised by cross-contract callback entrypoints (`register_callback`, `execute_callback`).
+
+| Error Name | Code | Description |
+|---|---|---|
+| `CallbackWrongOrigin` | 240 | Callback executed from an origin address different from the registered origin context. |
+| `CallbackWrongNonce` | 241 | Callback executed with an invocation nonce that does not match the registered context. |
+| `CallbackWrongPhase` | 242 | Callback executed with a lifecycle phase different from the expected phase. |
+| `CallbackReplayed` | 243 | Callback execution attempted on an already-consumed callback context (replay attempt). |
+| `CallbackAfterCancellation` | 244 | Callback registration or execution attempted on a cancelled escrow (`status == 4`). |
+| `CallbackNotFound` | 245 | Callback execution attempted with a nonce that has no registered context in storage. |
+
 Codes 36–41 (SEP-41 transfer-wrapper guards, also raised by `withdraw` and
 `claim_investor_payout`) are documented in
-[`docs/escrow-token-safety.md`](escrow-token-safety.md).
+[`docs/escrow-token-safety.md`](escrow-token-safety.md).
