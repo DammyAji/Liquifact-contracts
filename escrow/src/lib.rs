@@ -277,10 +277,6 @@ impl LiquifactEscrow {
             panic_with_error!(&env, CloseError::ActiveBalance);
         }
 
-        if escrow.dispute_active {
-            panic_with_error!(&env, CloseError::ActiveDispute);
-        }
-
         let metadata = CloseMetadata {
             admin: admin.clone(),
             timestamp: env.ledger().timestamp(),
@@ -877,6 +873,18 @@ pub enum EscrowError {
     CallbackAfterCancellation = 244,
     /// [`LiquifactEscrow::execute_callback`] called with a nonce that has no registered callback context.
     CallbackNotFound = 245,
+
+    /// [`LiquifactEscrow::rebind_registry_ref`] called after any investor principal has been recorded.
+    /// The off-chain registry reference is immutable once funding begins.
+    RegistryImmutableAfterFunding = 246,
+
+    /// [`LiquifactEscrow::rotate_beneficiary`] called after any investor principal has been recorded.
+    /// The beneficiary (SME) address is immutable once funding begins.
+    BeneficiaryImmutableAfterFunding = 247,
+
+    /// [`LiquifactEscrow::recover_admin`] called before the pending admin proposal has expired.
+    /// Recovery is only permitted after the proposal timelock has elapsed.
+    AdminRecoveryNotExpired = 248,
 }
 
 #[inline(always)]
