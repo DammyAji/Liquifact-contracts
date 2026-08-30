@@ -879,6 +879,24 @@ pub enum EscrowError {
     PausedBlocksRelease = 249,
     /// [`LiquifactEscrow::release`] called while escrow is not in funded status (`status != 1`).
     ReleaseNotFunded = 250,
+
+    /// [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] /
+    /// [`LiquifactEscrow::fund_batch`] rejected an amount that cannot be represented exactly at
+    /// the configured token decimal scale.
+    ///
+    /// Specifically: `amount % 10^(max_decimals - token_decimals) != 0` when the amount
+    /// contains more fractional precision than the token supports. Operators must round
+    /// amounts to the token's native scale before calling fund entrypoints.
+    FundingTokenScaleInvalid = 251,
+
+    /// A fund entrypoint was called but [`DataKey::FundingTokenScale`] is missing from instance
+    /// storage, meaning the escrow was not initialized with a `token_decimals` value and scale
+    /// validation is therefore not configured.
+    ///
+    /// **Note:** this error is only emitted when validation is explicitly required by the
+    /// implementation; instances that never set `token_decimals` skip validation entirely
+    /// (backward-compatible additive key).
+    FundingTokenScaleNotSet = 252,
 }
 
 #[inline(always)]
@@ -1099,6 +1117,58 @@ pub(crate) fn validate_maturity_bounds(env: &Env, maturity: u64, max_horizon: u6
     );
 }
 
+/// Reject `amount` if it cannot be represented exactly at `token_decimals` decimal places.
+///
+/// A token with `d` decimals expresses one base unit as `10^d` raw units.  An amount is
+/// representable exactly when it is a whole multiple of `10^d`.  Amounts that have more
+/// fractional precision than the token supports would silently truncate or round during
+/// off-chain conversion, altering the escrow value — so they are rejected here with a
+/// stable typed error instead.
+///
+/// # Rounding policy
+///
+/// There is **no** implicit rounding.  Callers must round amounts to the token's native
+/// scale **before** calling any fund entrypoint.  This makes the escrow's numeric behavior
+/// explicit, deterministic, and auditable.
+///
+/// # Arguments
+///
+/// * `env`            – Soroban environment (for `fail`).
+/// * `amount`         – The raw token amount supplied by the caller (must be > 0;
+///                      the positive-amount guard runs before this helper).
+/// * `token_decimals` – The decimal precision stored at [`DataKey::FundingTokenScale`].
+///
+/// # Errors
+///
+/// Panics with [`EscrowError::FundingTokenScaleInvalid`] when
+/// `amount % 10^token_decimals != 0`.
+///
+/// # Security notes
+///
+/// - Read-only: performs no storage writes.
+/// - Uses `checked_pow` and `checked_rem` to guard against overflow; `u64` exponents
+///   are bounded by the stored `u32` scale, so overflow is only possible when
+///   `token_decimals` is unreasonably large (> 38 for `i128`).  Any overflow is treated
+///   conservatively as an invalid scale and the amount is rejected.
+pub(crate) fn validate_decimal_scale(env: &Env, amount: i128, token_decimals: u32) {
+    // A scale of 0 means the token has no fractional digits; every integer amount is valid.
+    if token_decimals == 0 {
+        return;
+    }
+    // Compute 10^token_decimals using checked arithmetic.
+    // If this overflows i128 the scale is pathologically large; reject the amount.
+    let divisor: i128 = match (10i128).checked_pow(token_decimals) {
+        Some(d) => d,
+        None => fail(env, EscrowError::FundingTokenScaleInvalid),
+    };
+    // amount must be an exact multiple of divisor (no fractional tail).
+    let remainder = match amount.checked_rem(divisor) {
+        Some(r) => r,
+        None => fail(env, EscrowError::FundingTokenScaleInvalid),
+    };
+    ensure(env, remainder == 0, EscrowError::FundingTokenScaleInvalid);
+}
+
 // --- Storage keys ---
 
 #[contracttype]
@@ -1283,6 +1353,17 @@ pub enum DataKey {
     /// Absent ⇒ `0`. Incremented atomically with each successful release transfer.
     /// Used to enforce that releases do not exceed the remaining obligation.
     ReleasedAmount,
+    /// Immutable decimal scale (number of decimal places) of the bound SEP-41 funding token,
+    /// set once at [`LiquifactEscrow::init`] via the `token_decimals` parameter.
+    ///
+    /// Used by [`LiquifactEscrow::fund`], [`LiquifactEscrow::fund_with_commitment`], and
+    /// [`LiquifactEscrow::fund_batch`] to reject amounts that cannot be represented exactly
+    /// at the configured scale (i.e. amounts with more fractional digits than `token_decimals`
+    /// allows). Absent on instances that did not supply `token_decimals` at init.
+    ///
+    /// **Additive key (ADR-007):** absent ⇒ scale validation is skipped, preserving
+    /// backward compatibility for pre-existing escrow instances.
+    FundingTokenScale,
 }
 
 // --- Data types ---
@@ -2965,6 +3046,7 @@ impl LiquifactEscrow {
         funding_deadline: Option<u64>,
         allowlist_active: Option<bool>,
         protocol_fee_bps: Option<i64>,
+        token_decimals: Option<u32>,
     ) -> InvoiceEscrow {
         admin.require_auth();
 
@@ -3012,6 +3094,15 @@ impl LiquifactEscrow {
             .instance()
             .set(&keys::funding_token(), &funding_token);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
+
+        // Persist the token decimal scale when supplied.  Absent ⇒ scale validation
+        // is skipped for backward-compatible instances (additive key, ADR-007).
+        if let Some(decimals) = token_decimals {
+            env.storage()
+                .instance()
+                .set(&keys::funding_token_scale(), &decimals);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::Version, &SCHEMA_VERSION);
@@ -6284,6 +6375,17 @@ impl LiquifactEscrow {
 
         ensure(&env, amount > 0, EscrowError::FundingAmountNotPositive);
 
+        // Decimal-scale guard: if a token_decimals scale was configured at init,
+        // reject amounts that cannot be represented exactly at that precision.
+        // Absent key ⇒ scale validation is skipped (backward-compatible additive key).
+        if let Some(token_decimals) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&keys::funding_token_scale())
+        {
+            validate_decimal_scale(&env, amount, token_decimals);
+        }
+
         let floor: i128 = env
             .storage()
             .instance()
@@ -6758,13 +6860,19 @@ impl LiquifactEscrow {
             .unwrap_or(0);
 
         let remaining = escrow.funded_amount.checked_sub(released_amount).unwrap();
-        ensure(&env, amount <= remaining, EscrowError::ReleaseExceedsRemaining);
+        ensure(
+            &env,
+            amount <= remaining,
+            EscrowError::ReleaseExceedsRemaining,
+        );
 
         let mut next_escrow = escrow.clone();
         let is_final = amount == remaining;
-        
+
         let new_released = released_amount.checked_add(amount).unwrap();
-        env.storage().instance().set(&keys::released_amount(), &new_released);
+        env.storage()
+            .instance()
+            .set(&keys::released_amount(), &new_released);
 
         let sme = escrow.sme_address.clone();
         let token_addr: Address = Self::funding_token_or_fail(&env);
@@ -6780,7 +6888,7 @@ impl LiquifactEscrow {
         if is_final {
             next_escrow.status = 3;
             env.storage().instance().set(&DataKey::Escrow, &next_escrow);
-            
+
             // Increase DistributedPrincipal by `amount` to account for funds leaving.
             let prev_distributed: i128 = env
                 .storage()
